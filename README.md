@@ -4,7 +4,7 @@
 
 非官方开发预览项目。Windows x64 桌面插件与 Android ARM64 客户端配合使用，连接电脑上已经运行的 Codex 桌面端。
 
-发布包在本仓库的 Releases 提供。电脑端解压后执行 `install-desktop-plugin.ps1`，详细步骤见下方使用指南。Android 安装 APK 后自行填写 EasyTier 网络参数，再与电脑配对。安装包不携带开发者的组网配置、配对授权、证书或聊天记录。
+[下载电脑插件 0.3.0 Preview](https://github.com/fabulouszcc/codex-lan-remote/releases/tag/v0.3.0-preview)。当前公开 Release 提供 Windows 电脑端 ZIP，Android 客户端源码位于 `android/`。电脑端解压后执行 `install-desktop-plugin.ps1`，详细步骤见下方使用指南。Android 安装 APK 后自行填写 EasyTier 网络参数，再与电脑配对。安装包不携带开发者的组网配置、配对授权、证书或聊天记录。
 
 当前交付包括桌面 IPC 适配器、HTTPS 配对与连接服务、控制流程测试驱动、ARM64 Android 预览 APK，以及可安装的 Windows 电脑端“手机连接”插件。
 
@@ -40,3 +40,4 @@ IPC 适配器目前针对 Windows 桌面 `26.1007.9446.0` 中观察到的内部�
 电脑端当前通过 29 项 Node 测试、安装后 MCP/页面检查和真实 HTTPS 收发回归；Windows 新建证书与 Node TLS、EasyTier 固定版本配置检查通过。原电脑证书和手机授权已迁移到插件数据目录，当前手机连接由插件后台管理。
 
 重要限制：会话打断没有保证停止底层命令。内置 EasyTier 创建虚拟网卡和与用户网络互联仍需填写参数并按需确认 UAC 后验收；长期锁屏、自动发现和工具清单同步未全部验证。此本地预览包未上架公开插件目录。
+
