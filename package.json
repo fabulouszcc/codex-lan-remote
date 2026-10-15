@@ -1,0 +1,17 @@
+{
+  "name": "codex-lan-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test tests/desktop-ipc.test.mjs tests/thread-state.test.mjs tests/gateway.test.mjs tests/desktop-bridge.test.mjs tests/desktop-manager.test.mjs",
+    "start:gateway": "node scripts/start-gateway.mjs",
+    "verify:desktop": "node scripts/verify-desktop-ipc.mjs"
+  },
+  "devDependencies": {
+    "qrcode-generator": "2.0.4"
+  }
+}

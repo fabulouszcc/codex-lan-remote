@@ -1,0 +1,9 @@
+{
+  "name": "codex-lan-desktop",
+  "version": "0.3.0-preview",
+  "description": "手机连接：管理 Codex 手机远控、配对设备，以及已有网络或插件内置 EasyTier。",
+  "author": { "name": "Codex LAN Remote" },
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": { "displayName": "手机连接", "shortDescription": "从手机继续桌面 Codex 任务", "brandColor": "#99E6C5" }
+}
