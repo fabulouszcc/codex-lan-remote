@@ -4,6 +4,9 @@ on:
     branches: [main]
     paths: ['.github/workflows/release-preview.yml']
   workflow_dispatch:
+concurrency:
+  group: desktop-preview-release
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -25,6 +28,15 @@ jobs:
       - name: Build clean desktop bundle
         shell: pwsh
         run: ./scripts/build-desktop-plugin.ps1
+      - name: Check package privacy
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $PWD '.local/releases/codex-lan-desktop-0.3.0-preview.zip'))
+          try {
+            $bad = @($zip.Entries | Where-Object { $_.FullName -match '(?i)(\.local/|\.local\.(json|md)|\.(keystore|pfx|pem|key|crt)$|Packet\.dll$)' })
+            if ($bad.Count) { throw 'Unexpected private configuration or excluded dependency in release archive' }
+          } finally { $zip.Dispose() }
       - name: Publish prerelease
         shell: pwsh
         env:
@@ -40,3 +52,4 @@ jobs:
           }
           gh release upload v0.3.0-preview $asset .local/releases/SHA256SUMS.txt --clobber
           exit $LASTEXITCODE
+
