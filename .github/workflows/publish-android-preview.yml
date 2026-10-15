@@ -13,6 +13,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Fetch and verify tested APK
         shell: bash
         run: |
@@ -27,4 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload v0.3.0-preview codex-lan-0.2.4-preview.apk SHA256SUMS-android.txt --clobber
+        run: |
+          gh release upload v0.3.0-preview codex-lan-0.2.4-preview.apk SHA256SUMS-android.txt --clobber
+          gh release edit v0.3.0-preview --notes-file docs/release-0.3.0.md
+
