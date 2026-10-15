@@ -22,3 +22,12 @@ Android 手机下载 `codex-lan-0.2.4-preview.apk`（Android 9+、ARM64），内
 
 此 Release 同时提供电脑插件 ZIP 与 Android APK，二者版本号分别为 0.3.0 和 0.2.4。Android 源码位于 android/。第三方组件的许可证及固定来源包含在发布包 licenses/ 中。
 
+## SHA-256
+
+下载后可使用以下 SHA-256 核对文件完整性：
+
+```text
+5520d28d29cf912a585523bfe15bf3219d84cacbd673b25b45bcbacfa4c03040  codex-lan-desktop-0.3.0-preview.zip
+98eaef1f8d93f30323ee8d61153d9b08120b586626e643ecea44772f343e4040  codex-lan-0.2.4-preview.apk
+```
+

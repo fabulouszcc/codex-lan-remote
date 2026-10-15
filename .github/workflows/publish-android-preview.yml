@@ -1,8 +1,5 @@
 name: Publish verified Android preview
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/publish-android-preview.yml']
   workflow_dispatch:
 permissions:
   contents: write
@@ -29,6 +26,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload v0.3.0-preview codex-lan-0.2.4-preview.apk SHA256SUMS-android.txt --clobber
-          gh release edit v0.3.0-preview --notes-file docs/release-0.3.0.md
+          gh release upload v0.3.0-preview codex-lan-0.2.4-preview.apk --clobber
+          node scripts/update-release-notes.mjs
 

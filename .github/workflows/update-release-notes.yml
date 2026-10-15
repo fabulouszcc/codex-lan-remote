@@ -1,0 +1,18 @@
+name: Update release introduction
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/update-release-notes.yml', 'scripts/update-release-notes.mjs', 'docs/release-0.3.0.md']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put checksums in release introduction
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/update-release-notes.mjs
