@@ -28,12 +28,31 @@ if (-not (Test-Path -LiteralPath $taskConfiguration)) {
     }
     $taskConfig | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $taskConfiguration -Encoding utf8
 }
-& $CodexPath plugin marketplace add $taskBundle --json
-if ($LASTEXITCODE -ne 0) { throw '注册本地插件目录失败' }
+$taskCurrentConfig = Get-Content -LiteralPath $taskConfiguration -Raw | ConvertFrom-Json
+if (-not $taskCurrentConfig.codexBinary -or -not (Test-Path -LiteralPath $taskCurrentConfig.codexBinary)) {
+    $taskCurrentConfig.codexBinary = $CodexPath
+    $taskCurrentConfig | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $taskConfiguration -Encoding utf8
+}
+$taskSourcesJson = & $CodexPath plugin marketplace list --json
+if ($LASTEXITCODE -ne 0) { throw '无法读取已有插件目录' }
+$taskPriorSource = ($taskSourcesJson | ConvertFrom-Json).marketplaces | Where-Object { $_.name -eq 'codex-lan-local' } | Select-Object -First 1
+$taskSourceChanged = $taskPriorSource -and ([IO.Path]::GetFullPath($taskPriorSource.root).TrimEnd('\') -ne [IO.Path]::GetFullPath($taskBundle).TrimEnd('\'))
+if ($taskSourceChanged) {
+    & $CodexPath plugin marketplace remove codex-lan-local --json | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '无法更新手机连接插件目录来源' }
+}
+if (-not $taskPriorSource -or $taskSourceChanged) {
+    & $CodexPath plugin marketplace add $taskBundle --json
+    if ($LASTEXITCODE -ne 0) {
+        if ($taskSourceChanged) { & $CodexPath plugin marketplace add $taskPriorSource.root --json | Out-Null }
+        throw '注册本地插件目录失败，已尝试恢复旧来源'
+    }
+}
 $taskInstalledJson = & $CodexPath plugin add codex-lan-desktop@codex-lan-local --json
 if ($LASTEXITCODE -ne 0) { throw '安装插件失败' }
 $taskInstalledJson | Write-Output
 $taskInstalled = $taskInstalledJson | ConvertFrom-Json
 & (Join-Path $taskInstalled.installedPath 'scripts\prepare-desktop-native.ps1') -PluginDirectory $taskInstalled.installedPath
+& (Join-Path $taskInstalled.installedPath 'scripts\install-settings-shortcuts.ps1') -PluginDirectory $taskInstalled.installedPath -DataDirectory $DataDirectory
 Write-Output '手机连接插件已安装。当前聊天可能需要刷新插件或在新的聊天中加载工具；无需重装 Android App。'
 Write-Output ('插件数据目录：' + $DataDirectory)

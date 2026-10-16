@@ -21,7 +21,7 @@ function reply(response, status, value) {
 }
 
 // No generic RPC proxy. Only explicitly configured chats and supported operations.
-export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', deviceId, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
+export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
   const sessions = new Map(devices.map(device => [device.tokenHash, device]));
   let pairingUntil = now() + pairingTtlMs;
   const attempts = new Map(); const idempotency = new Map(); const locks = new Map();
@@ -88,6 +88,11 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
       if (request.method === 'GET' && url.pathname === '/v1/threads') {
         reply(response, 200, { threads: await bridge.catalog() }); return;
       }
+      if (request.method === 'GET' && url.pathname === '/v1/models') {
+        const threadId=url.searchParams.get('threadId');
+        if(!bridge.snapshot().some(thread=>thread.id===threadId))throw fail(403,'聊天不在授权范围内');
+        try{reply(response,200,await bridge.modelOptions(threadId));}catch(error){throw fail(400,error.message);}return;
+      }
       if (request.method === 'POST' && url.pathname === '/v1/select') {
         const input = await body(request);
         if (typeof input.threadId !== 'string') throw fail(400, '需要聊天 ID');
@@ -103,11 +108,11 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
           });
         }
         if (!sessions.has(sessionHash)) throw fail(401, '设备授权已撤销');
-        reply(response, 200, { version, deviceId, threads: bridge.snapshot() }); return;
+        reply(response, 200, { version, deviceId, connectionAddresses, threads: bridge.snapshot() }); return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {
         const input = await body(request);
-        if (typeof input.threadId !== 'string' || !['start', 'steer', 'interrupt', 'approve'].includes(input.op)) throw fail(400, '不支持的操作');
+        if (typeof input.threadId !== 'string' || !['start', 'steer', 'interrupt', 'approve', 'model'].includes(input.op)) throw fail(400, '不支持的操作');
         if (['start', 'steer'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000)) throw fail(400, '消息应为 1–16000 字符');
         if (!bridge.snapshot().some(thread => thread.id === input.threadId)) throw fail(403, '聊天不在授权范围内');
         const id = request.headers['idempotency-key'];
@@ -142,6 +147,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
   server.requestTimeout = 30000; server.headersTimeout = 10000; server.maxConnections = 40;
   server.on('close', () => { clearTimeout(publishTimer); bridge.off('changed', changed); for (const wake of [...waiters]) wake(); });
   return {
+    createListener() { return https.createServer({ ...tls, minVersion: 'TLSv1.2', maxHeaderSize: 8192 }, server.listeners('request')[0]); },
     server,
     get pairingCode() { return pairingCode; },
     get pairingUntil() { return pairingUntil; },

@@ -7,6 +7,37 @@ import java.util.Iterator;
 
 /** Merge wire snapshots without erasing locally retained history on a reconnect. */
 final class MobileState {
+    static String connectionAddress(String value) throws Exception {
+        String input=value.trim();if(!input.contains("://"))input="https://"+input;
+        java.net.URI uri=new java.net.URI(input);int port=uri.getPort()==-1?9443:uri.getPort();
+        if(!"https".equals(uri.getScheme()) || uri.getHost()==null || uri.getRawUserInfo()!=null || uri.getRawQuery()!=null || uri.getRawFragment()!=null || (uri.getPath()!=null&&!uri.getPath().isEmpty()&&!"/".equals(uri.getPath())) || port<1 || port>65535)throw new Exception("请输入电脑 IP:端口，仅支持 HTTPS 连接");
+        return new java.net.URI("https",null,uri.getHost(),port,null,null,null).toASCIIString();
+    }
+    static String composerAction(JSONObject state, JSONObject thread, boolean sending, String draft) {
+        if (!unavailableReason(state,thread,sending).isEmpty()) return "none";
+        boolean active=!activeTurnId(thread).isEmpty(), hasText=draft!=null && !draft.trim().isEmpty();
+        return hasText ? (active ? "steer" : "start") : active ? "interrupt" : "none";
+    }
+    static JSONArray timeline(JSONObject turn) throws Exception {
+        JSONArray ordered=turn.optJSONArray("timeline");
+        if(ordered!=null && ordered.length()>0){
+            boolean hasUser=false;for(int i=0;i<ordered.length();i++)if("user".equals(ordered.getJSONObject(i).optString("type")))hasUser=true;
+            if(hasUser || turn.optString("input").isEmpty())return ordered;
+            JSONArray result=new JSONArray().put(new JSONObject().put("id","legacy-input").put("type","user").put("text",turn.optString("input")));
+            for(int i=0;i<ordered.length();i++)result.put(ordered.get(i));return result;
+        }
+        JSONArray result=new JSONArray(), replies=turn.optJSONArray("agentMessages"), tools=turn.optJSONArray("toolResults"), types=turn.optJSONArray("itemTypes");
+        if(!turn.optString("input").isEmpty())result.put(new JSONObject().put("type","user").put("text",turn.optString("input")));
+        int reply=0;java.util.HashSet<Integer> used=new java.util.HashSet<>();
+        if(types!=null)for(int i=0;i<types.length();i++){
+            String type=types.optString(i);
+            if("agentMessage".equals(type) && replies!=null && reply<replies.length())result.put(new JSONObject().put("type","message").put("text",replies.getString(reply++)));
+            else if(tools!=null)for(int j=0;j<tools.length();j++)if(!used.contains(j) && type.equals(tools.getJSONObject(j).optString("type"))){JSONObject tool=new JSONObject(tools.getJSONObject(j).toString());tool.put("toolType",type).put("type","tool");result.put(tool);used.add(j);break;}
+        }
+        if(replies!=null)while(reply<replies.length())result.put(new JSONObject().put("type","message").put("text",replies.getString(reply++)));
+        if(tools!=null)for(int j=0;j<tools.length();j++)if(!used.contains(j)){JSONObject tool=new JSONObject(tools.getJSONObject(j).toString());tool.put("toolType",tool.optString("type")).put("type","tool");result.put(tool);}
+        return result;
+    }
     static boolean canQuickApprove(JSONObject request, String details) {
         if (details == null || details.trim().isEmpty() || details.length() > 1200 || request.optBoolean("truncated")) return false;
         if ("command".equals(request.optString("kind"))) {
@@ -63,6 +94,7 @@ final class MobileState {
                         if (prior != null) {
                             if (next.optString("input").isEmpty()) next.put("input", prior.optString("input"));
                             if (next.optJSONArray("agentMessages") == null || next.getJSONArray("agentMessages").length() == 0) next.put("agentMessages", prior.optJSONArray("agentMessages"));
+                            if (next.optJSONArray("timeline") == null || next.getJSONArray("timeline").length() == 0) next.put("timeline", prior.optJSONArray("timeline"));
                         }
                         turns.put(key, next);
                     }
@@ -76,6 +108,7 @@ final class MobileState {
         JSONObject result = new JSONObject().put("threads", new JSONArray(threads.values()));
         if (previous != null) result.put("selectedThreadId", previous.optString("selectedThreadId"));
         if (incoming != null) result.put("version", incoming.optLong("version")).put("savedAt", System.currentTimeMillis());
+        JSONObject connections=incoming==null?null:incoming.optJSONObject("connectionAddresses");if(connections==null&&previous!=null)connections=previous.optJSONObject("connectionAddresses");if(connections!=null)result.put("connectionAddresses",connections);
         return result;
     }
     static JSONObject offline(JSONObject value) throws Exception {

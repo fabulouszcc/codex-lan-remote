@@ -27,8 +27,15 @@ class FakeBridge extends EventEmitter {
   snapshot() { return [{ id: 'allowed-chat', ready: true, turns: [] }]; }
   async catalog() { return [{ id: 'allowed-chat', name: 'Test chat' }]; }
   async openThread(id) { if (id !== 'allowed-chat') throw Error('Unknown chat'); }
+  async modelOptions(){return {models:[{model:'available',efforts:['high']}],current:{model:'available',effort:'high'}};}
   async command(id, command) { this.count++; await new Promise(resolve => setTimeout(resolve, 20)); return { accepted: true, text: command.text }; }
 }
+test('model discovery requires pairing and a known chat',async t=>{
+  const {request,pair}=await fixture(t);assert.equal((await request('GET','/v1/models?threadId=allowed-chat')).status,401);
+  const token=await pair(),headers={authorization:`Bearer ${token}`};
+  assert.equal((await request('GET','/v1/models?threadId=unknown',undefined,headers)).status,403);
+  const response=await request('GET','/v1/models?threadId=allowed-chat',undefined,headers);assert.equal(response.status,200);assert.equal(response.data.models[0].model,'available');
+});
 async function fixture(t, options = {}) {
   const bridge = new FakeBridge(); const saved = [];
   const gateway = createGateway({ tls, bridge, deviceId: 'test-device', pairingCode: 'test-pairing-code', saveDevices: async value => saved.push(structuredClone(value)), ...options });
@@ -62,6 +69,15 @@ test('TLS and pairing protect private chat state; persisted credentials contain 
   assert.equal(token.length, 64); assert.equal(JSON.stringify(f.saved).includes(token), false);
   const state = await f.request('GET', '/v1/state', undefined, { authorization: `Bearer ${token}` });
   assert.equal(state.status, 200); assert.equal(state.data.threads[0].id, 'allowed-chat');
+});
+
+test('LAN listener shares pairing, session revocation and authorization with overlay listener', async t => {
+  const f=await fixture(t);const token=await f.pair();const lan=f.gateway.createListener();lan.listen(0,'127.0.0.1');await once(lan,'listening');
+  t.after(async()=>{lan.closeAllConnections();await new Promise(resolve=>lan.close(resolve));});
+  const get=authorization=>new Promise((resolve,reject)=>{const req=https.get({hostname:'127.0.0.1',port:lan.address().port,path:'/v1/state',ca:certificate.toString(),headers:authorization?{authorization:`Bearer ${authorization}`}:{ }},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});req.on('error',reject);});
+  assert.equal(await get(),401);assert.equal(await get(token),200);
+  await f.gateway.revokeDevice(f.gateway.listDevices()[0].id);
+  assert.equal(await get(token),401);
 });
 test('local management rotates pairing without dropping existing devices and revokes a selected device', async t => {
   const f = await fixture(t); const token = await f.pair();

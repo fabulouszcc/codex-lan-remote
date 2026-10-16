@@ -10,6 +10,7 @@ export const PROTOCOL_VERSIONS = Object.freeze({
   initialize: 0,
   'thread-owner-discovery': 1,
   'thread-follower-read-model-settings': 1,
+  'thread-follower-update-thread-settings': 2,
   'thread-stream-following-changed': 1,
   'thread-stream-state-changed': 11,
   'thread-follower-start-turn': 2,
@@ -212,6 +213,12 @@ export class DesktopIpcClient extends EventEmitter {
     const owner = ownerId || await this.discoverOwner(threadId);
     const response = await this.#request('thread-follower-load-complete-history', { conversationId: threadId }, owner);
     return response.result;
+  }
+
+  updateModelSettings(threadId, model, effort, { ownerId } = {}) {
+    if (typeof model !== 'string' || !model.trim() || model.length > 160) throw Error('Invalid model');
+    if (typeof effort !== 'string' || !effort || effort.length > 32) throw Error('Invalid reasoning effort');
+    return this.#control(threadId, 'thread-follower-update-thread-settings', { threadSettings: { model, effort } }, ownerId);
   }
 
   enableThreadControl(threadId) {

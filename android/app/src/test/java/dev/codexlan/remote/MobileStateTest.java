@@ -4,6 +4,52 @@ import org.json.*;
 import static org.junit.Assert.*;
 
 public class MobileStateTest {
+    @Test public void quickNavigationShowsHumanAnswerInsteadOfQuestionTransportMarkup() throws Exception {
+        JSONObject item=new JSONObject().put("text","<send_user_message_question_reply>\n[{\"questionItemId\":\"private-id\",\"answer\":\"已经解锁\"}]\n</send_user_message_question_reply>");
+        assertEquals("已经解锁",ChatRows.navigationText(item));
+        assertEquals("hello",ChatRows.navigationText(new JSONObject().put("text","<in-app-browser-context>metadata</in-app-browser-context>\n## My request:\nhello")));
+    }
+    @Test public void liveThinkingAppearsAtBottomAndStaleOfflineHistoryDoesNotAnimate() throws Exception {
+        JSONObject thread=new JSONObject().put("id","chat").put("ready",true).put("activeTurnId","t").put("turns",new JSONArray()).put("activity",new JSONObject().put("label","正在思考…").put("summary","Visible summary"));
+        java.util.List<ChatRows.Row> rows=ChatRows.build(thread);assertEquals("activity",rows.get(rows.size()-1).type);assertEquals("Visible summary",rows.get(rows.size()-1).data.getString("summary"));
+        thread.put("ready",false);for(ChatRows.Row row:ChatRows.build(thread))assertNotEquals("activity",row.type);
+        thread.put("ready",true).put("activeTurnId","");for(ChatRows.Row row:ChatRows.build(thread))assertNotEquals("activity",row.type);
+    }
+    @Test public void toolsShareOneGroupPerTurnWithoutDroppingRepliesOrFollowups() throws Exception {
+        JSONObject turn=new JSONObject("{\"id\":\"t\",\"timeline\":[{\"id\":\"u\",\"type\":\"user\",\"text\":\"ask\"},{\"id\":\"a\",\"type\":\"message\",\"text\":\"checking\"},{\"id\":\"x\",\"type\":\"tool\",\"output\":\"one\"},{\"id\":\"f\",\"type\":\"user\",\"text\":\"followup\"},{\"id\":\"y\",\"type\":\"tool\",\"output\":\"two\"},{\"id\":\"z\",\"type\":\"message\",\"text\":\"done\"}]}");
+        JSONObject thread=new JSONObject().put("id","chat").put("turns",new JSONArray().put(turn));
+        java.util.List<ChatRows.Row> rows=ChatRows.build(thread);
+        assertEquals(5,rows.size());assertEquals("tools",rows.get(2).type);assertEquals(2,rows.get(2).data.getJSONArray("items").length());
+        assertEquals("followup",rows.get(3).data.getString("text"));assertEquals("done",rows.get(4).data.getString("text"));
+        String signature=rows.get(2).signature;turn.getJSONArray("timeline").getJSONObject(4).put("output","changed");
+        java.util.List<ChatRows.Row> changed=ChatRows.build(thread);assertEquals(rows.get(2).key,changed.get(2).key);assertNotEquals(signature,changed.get(2).signature);assertEquals(rows.get(0).signature,changed.get(0).signature);
+    }
+    @Test public void rowProjectionKeepsOldHistoryAndApprovalWithoutMixingToolGroups() throws Exception {
+        JSONArray turns=new JSONArray();for(int i=0;i<120;i++)turns.put(new JSONObject().put("id","t"+i).put("timeline",new JSONArray().put(new JSONObject().put("id","u").put("type","user").put("text","message "+i)).put(new JSONObject().put("id","tool").put("type","tool"))));
+        JSONObject thread=new JSONObject().put("id","chat").put("turns",turns).put("approvals",new JSONArray().put(new JSONObject().put("id",7)));
+        java.util.List<ChatRows.Row> rows=ChatRows.build(thread);assertEquals(241,rows.size());assertEquals("message 0",rows.get(0).data.getString("text"));assertEquals("approval",rows.get(240).type);
+        java.util.Set<String> keys=new java.util.HashSet<>();for(ChatRows.Row row:rows)assertTrue(keys.add(row.key));
+    }
+    @Test public void directAddressesDefaultToPinnedHttpsAndRejectCredentialOrPlaintextUrls() throws Exception {
+        assertEquals("https://192.168.8.2:9443",MobileState.connectionAddress("192.168.8.2"));
+        assertEquals("https://192.168.8.2:9444",MobileState.connectionAddress("https://192.168.8.2:9444/"));
+        for(String bad:new String[]{"http://192.168.8.2","https://user:pass@example.com","https://example.com/path","https://example.com?q=x","https://example.com#token","https://example.com:99999"}){
+            try{MobileState.connectionAddress(bad);fail("Accepted invalid address");}catch(Exception expected){}
+        }
+    }
+    @Test public void primaryActionFollowsTaskAndDraftWithoutEnablingOfflineInterrupt() throws Exception {
+        JSONObject thread=new JSONObject().put("ready",true).put("writable",true).put("activeTurnId","");JSONObject state=new JSONObject().put("online",true);
+        assertEquals("none",MobileState.composerAction(state,thread,false,"  "));assertEquals("start",MobileState.composerAction(state,thread,false,"hello"));
+        thread.put("activeTurnId","active");assertEquals("interrupt",MobileState.composerAction(state,thread,false,"\n "));assertEquals("steer",MobileState.composerAction(state,thread,false,"follow up"));
+        assertEquals("none",MobileState.composerAction(state,thread,true,""));state.put("online",false);assertEquals("none",MobileState.composerAction(state,thread,false,""));
+        state.put("online",true);thread.put("ready",false);assertEquals("none",MobileState.composerAction(state,thread,false,"hello"));
+    }
+    @Test public void orderedTranscriptKeepsDesktopFollowupAndToolPositionsAndLegacyCacheRemainsReadable() throws Exception {
+        JSONArray ordered=new JSONArray("[{\"type\":\"user\",\"text\":\"one\"},{\"type\":\"message\",\"text\":\"checking\"},{\"type\":\"tool\",\"id\":\"t\"},{\"type\":\"user\",\"text\":\"desktop followup\"},{\"type\":\"message\",\"text\":\"done\"}]");
+        JSONObject turn=new JSONObject().put("input","one\n\ndesktop followup").put("timeline",ordered);assertEquals(ordered.toString(),MobileState.timeline(turn).toString());
+        JSONObject legacy=new JSONObject("{\"input\":\"hello\",\"agentMessages\":[\"checking\",\"done\"],\"itemTypes\":[\"userMessage\",\"agentMessage\",\"commandExecution\",\"agentMessage\"],\"toolResults\":[{\"id\":\"tool\",\"type\":\"commandExecution\"}]}");
+        JSONArray result=MobileState.timeline(legacy);assertEquals("user",result.getJSONObject(0).getString("type"));assertEquals("tool",result.getJSONObject(2).getString("type"));assertEquals("done",result.getJSONObject(3).getString("text"));
+    }
     @Test public void completeDesktopDiffStringAllowsQuickApprovalButUnknownOrTruncatedDiffDoesNot() throws Exception {
         JSONObject change = new JSONObject().put("path", "test.txt").put("diff", "+TEST");
         JSONObject request = new JSONObject().put("kind", "file").put("changes", new JSONArray().put(change));

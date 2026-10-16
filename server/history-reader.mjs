@@ -1,6 +1,7 @@
 // Separate read-only app-server for persisted metadata/history. Never resumes a thread.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { turnTimeline, turnInput } from './turn-timeline.mjs';
 export class HistoryReader {
   constructor(binary) { this.binary = binary; this.pending = new Map(); this.sequence = 0; }
   async connect() {
@@ -35,7 +36,7 @@ export class HistoryReader {
     this.initialized = true;
   }
   request(method, params) {
-    if (!['initialize', 'thread/list', 'thread/turns/list'].includes(method)) throw Error('历史客户端禁止该操作');
+    if (!['initialize', 'thread/list', 'thread/turns/list', 'model/list'].includes(method)) throw Error('历史客户端禁止该操作');
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => { this.pending.delete(id); reject(Error('历史读取超时')); }, 15000);
@@ -50,13 +51,28 @@ export class HistoryReader {
     const value = await this.request('thread/list', { limit: 100, sourceKinds: [], sortKey: 'updated_at' });
     return (value.data || []).map(thread => ({ id: thread.id, name: thread.name || thread.preview?.slice(0, 70) || '未命名聊天', updatedAt: thread.updatedAt }));
   }
+  async models() {
+    await this.connect();
+    const result=[];let cursor;
+    for(let page=0;page<5;page++){
+      const value=await this.request('model/list',{limit:100,includeHidden:false,...cursor?{cursor}:{}});
+      result.push(...(value.data||[]).filter(model=>!model.hidden).map(model=>({
+        model:model.model,displayName:model.displayName||model.model,
+        defaultEffort:model.defaultReasoningEffort,
+        efforts:(model.supportedReasoningEfforts||[]).map(option=>option.reasoningEffort),
+      })));
+      cursor=value.nextCursor;if(!cursor)break;
+    }
+    return result;
+  }
   async turns(threadId) {
     await this.connect();
     const value = await this.request('thread/turns/list', { threadId, limit: 50, sortDirection: 'desc', itemsView: 'full' });
     return (value.data || []).reverse().map(turn => ({
       id: turn.id, status: turn.status, startedAtMs: turn.startedAt ? turn.startedAt * 1000 : undefined,
-      input: (turn.items || []).filter(item => item.type === 'userMessage').flatMap(item => item.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n'),
+      input: turnInput(turn),
       agentMessages: (turn.items || []).filter(item => item.type === 'agentMessage').map(item => item.text),
+      timeline: turnTimeline(turn.items),
       itemTypes: (turn.items || []).map(item => item.type),
       toolResults: (turn.items || []).filter(item => ['commandExecution', 'fileChange'].includes(item.type)).map(item => ({ id: item.id, type: item.type, status: item.status, exitCode: item.exitCode })),
     }));

@@ -22,12 +22,14 @@ export function validateConfig(value) {
   if (isIP(host) !== 4 || host === '0.0.0.0' || host.startsWith('127.') || host.startsWith('169.254.')) throw Error('请输入本机可达的局域网或虚拟 IPv4 地址');
   if (value.mode === 'existing' && !addresses().some(row => row.address === host)) throw Error('该 IP 不属于本机网卡，请填写电脑的本机地址');
   const port = Number(value.port);
+  const lanHost=String(value.lanHost || '').trim();
+  if(lanHost && (!/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(lanHost) || !addresses().some(row=>row.address===lanHost))) throw Error('局域网直连地址必须是本机的私有 IPv4 网卡地址');
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw Error('远控端口应在 1024–65535 之间');
   const threads = Array.isArray(value.threads) ? value.threads : [];
   if (threads.length > 24 || threads.some(row => !/^[a-zA-Z0-9_-]{1,128}$/.test(row.id))) throw Error('聊天范围无效');
   if (!threads.length && !value.allowSelectedChats) throw Error('请选择至少一个允许控制的聊天，或允许手机主动选择本机聊天');
   const et = value.easytier || {};
-  const safe = { mode: value.mode, host, port, name: String(value.name || 'Codex 电脑').slice(0, 60),
+  const safe = { mode: value.mode, host, port, lanHost, name: String(value.name || 'Codex 电脑').slice(0, 60),
     autoStart: value.autoStart === true,
     codexBinary: String(value.codexBinary || ''), allowSelectedChats: value.allowSelectedChats === true,
     threads: threads.map(row => ({ id: row.id, name: String(row.name || '桌面聊天').slice(0, 80) })),

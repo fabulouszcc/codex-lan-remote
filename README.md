@@ -4,11 +4,13 @@
 
 非官方开发预览项目。Windows x64 桌面插件与 Android ARM64 客户端配合使用，连接电脑上已经运行的 Codex 桌面端。
 
-[下载电脑插件 0.3.0 Preview](https://github.com/fabulouszcc/codex-lan-remote/releases/tag/v0.3.0-preview)。Release 同时提供 Windows 电脑端 ZIP 和 [Android ARM64 APK 0.2.4](https://github.com/fabulouszcc/codex-lan-remote/releases/download/v0.3.0-preview/codex-lan-0.2.4-preview.apk)，Android 源码位于 `android/`。电脑端解压后执行 `install-desktop-plugin.ps1`，详细步骤见下方使用指南。Android 安装 APK 后自行填写 EasyTier 网络参数，再与电脑配对。安装包不携带开发者的组网配置、配对授权、证书或聊天记录。
+当前版本为 Android 0.3.3 / 电脑插件 0.3.3：可从电脑实际可用列表选择模型和思考强度，聊天右侧增加记录定位栏，Codex 回复使用气泡，底部同步任务与思考状态。工具按每轮对话合并折叠，网络切换入口位于顶部连接状态；聊天使用可回收列表和按需加载工具详情。电脑提供桌面和开始菜单“手机连接设置”入口。已在真机验证并安装。详见 [界面升级与验收](docs/界面升级与验收.md)。
+
+[下载 0.3.3 Preview](https://github.com/fabulouszcc/codex-lan-remote/releases/tag/v0.3.3-preview)：[Windows 电脑插件 ZIP](https://github.com/fabulouszcc/codex-lan-remote/releases/download/v0.3.3-preview/codex-lan-desktop-0.3.3-preview.zip) 和 [Android ARM64 APK](https://github.com/fabulouszcc/codex-lan-remote/releases/download/v0.3.3-preview/codex-lan-0.3.3-preview.apk)。Android 源码位于 `android/`。电脑端解压后执行 `install-desktop-plugin.ps1`，详细步骤见下方使用指南。Android 安装后可选择局域网直连，或自行配置 EasyTier，再与电脑配对。安装包不携带开发者的组网配置、配对授权、证书或聊天记录，SHA-256 位于 Release 介绍中。
 
 当前交付包括桌面 IPC 适配器、HTTPS 配对与连接服务、控制流程测试驱动、ARM64 Android 预览 APK，以及可安装的 Windows 电脑端“手机连接”插件。
 
-Android 当前为 0.2.4，已在小米 14 Ultra 验证收发、完成/审批横幅和取消审批；开启勿扰时可能仅出现在通知列表。电脑插件 0.3.0-preview 已本地安装，支持已有网络/内置 EasyTier 配置、加密保存密钥、配对码与二维码、授权撤销、连接状态及后台管理。
+Android 与电脑插件当前均为 0.3.3-preview。已在小米 14 Ultra 验证聊天同步、停止、模型设置与记录定位；此前版本验证过完成/审批横幅和取消审批，开启勿扰时可能仅出现在通知列表。电脑支持已有网络/内置 EasyTier 配置、加密保存密钥、配对码与二维码、授权撤销、连接状态及后台管理。
 
 - [本机接口验证与限制](docs/接口验证.md)
 - [电脑端插件安装与使用](docs/电脑端插件使用指南.md)

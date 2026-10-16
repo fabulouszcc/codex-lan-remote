@@ -3,29 +3,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-concurrency:
-  group: android-preview-release
-  cancel-in-progress: true
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch and verify tested APK
-        shell: bash
-        run: |
-          curl --fail --location --retry 3 --output codex-lan-0.2.4-preview.apk https://raw.githubusercontent.com/fabulouszcc/codex-lan-remote/e502272b6e89ab3d9b564bebbf2cf676ab322843/codex-lan-0.2.4-preview.apk
-          echo '98eaef1f8d93f30323ee8d61153d9b08120b586626e643ecea44772f343e4040  codex-lan-0.2.4-preview.apk' > SHA256SUMS-android.txt
-          sha256sum --check SHA256SUMS-android.txt
-          if unzip -Z1 codex-lan-0.2.4-preview.apk | grep -Ei '(shared_prefs/|databases/|\.local/|\.keystore$|\.pfx$|\.key$)'; then
-            echo 'Unexpected private file in APK'
-            exit 1
-          fi
-      - name: Upload APK to existing preview release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          gh release upload v0.3.0-preview codex-lan-0.2.4-preview.apk --clobber
-          node scripts/update-release-notes.mjs
-
+  release:
+    uses: ./.github/workflows/release-preview.yml

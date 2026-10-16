@@ -19,7 +19,7 @@ public final class SessionService extends Service {
     private volatile boolean stopped, started;
     private volatile String selection = "";
     private volatile long refreshVersion;
-    private RemoteApi api;
+    private volatile RemoteApi api;
     private HistoryCache cache;
     private ChatNotifications notifications;
     private boolean connectionAnnounced;
@@ -28,6 +28,12 @@ public final class SessionService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (intent == null || "stop".equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
         try {
+            if(started && "switch-address".equals(intent.getAction())) {
+                JSONObject saved=new SecureSession(this).load();
+                if(saved==null || !api.fingerprint.equals(saved.optString("fingerprint")))throw new Exception("切换地址需要相同电脑身份");
+                RemoteApi replacement=new RemoteApi(saved.getString("address"),saved.getString("fingerprint"),saved.getString("token"));
+                api.cancel();api=replacement;refreshVersion++;
+            }
             if (!started) {
                 JSONObject connection = new SecureSession(this).load(); if (connection == null) { stopSelf(); return START_NOT_STICKY; }
                 api = new RemoteApi(connection.getString("address"), connection.getString("fingerprint"), connection.getString("token"));

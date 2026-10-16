@@ -12,7 +12,7 @@ const safeEqual = (a, b) => typeof a === 'string' && a.length === b.length && ti
 export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {} }) {
   let mutation = Promise.resolve(); const events = [];
   const record = message => { events.push({ at: new Date().toISOString(), message }); if (events.length > 50) events.shift(); };
-  const status = async () => ({ kind: 'codex-lan-manager', version: '0.3.0-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
+  const status = async () => ({ kind: 'codex-lan-manager', version: '0.3.3-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
   const start = async () => {
     const saved = await store.load(); if (!saved) throw Error('请先保存连接配置');
     const config = { ...validateConfig(saved), secretCipher: saved.secretCipher };

@@ -124,11 +124,19 @@ test('closed clients reject outstanding requests and cannot reconnect', async t 
 test('control defaults to disabled and rejects non-allowlisted threads before sending', async () => {
   const client = new DesktopIpcClient({ controlThreadIds: ['allowed-thread'] });
   await assert.rejects(client.startTurn('other-thread', 'test'), /not enabled/);
+  await assert.rejects(client.updateModelSettings('other-thread','model','high'), /not enabled/);
   await assert.rejects(client.setQueuedFollowUps('other-thread', []), /not enabled/);
   await assert.rejects(client.replyCommandApproval('other-thread', 1, 'accept'), /not enabled/);
   assert.throws(() => client.replyCommandApproval('allowed-thread', 1, 'acceptForSession'), /Unsupported/);
   assert.throws(() => client.interruptTurn('allowed-thread', ''), /active turn ID/);
   client.close();
+});
+
+test('model changes use the installed settings protocol and forward only model and effort', async t=>{
+  const {client,messages}=await fixture(t,(request,send)=>{if(request.method==='thread-follower-update-thread-settings')respond(request,send,{applied:true});},{controlThreadIds:['allowed-thread']});
+  assert.equal((await client.updateModelSettings('allowed-thread','available-model','high',{ownerId:'desktop-owner',permissions:'unsafe'})).applied,true);
+  const sent=messages.find(message=>message.method==='thread-follower-update-thread-settings');
+  assert.equal(sent.version,2);assert.deepEqual(sent.params.threadSettings,{model:'available-model',effort:'high'});assert.equal(sent.targetClientId,'desktop-owner');
 });
 
 test('explicit control remains bound to the allowlisted thread and actual owner', async t => {

@@ -1,9 +1,12 @@
 name: Update release introduction
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/update-release-notes.yml', 'scripts/update-release-notes.mjs', 'docs/release-0.3.0.md']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing preview release tag
+        default: v0.3.3-preview
+        required: true
+        type: string
 permissions:
   contents: write
 jobs:
@@ -15,4 +18,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CODEX_LAN_RELEASE_TAG: ${{ inputs.tag }}
         run: node scripts/update-release-notes.mjs

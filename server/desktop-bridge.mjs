@@ -85,6 +85,7 @@ export class DesktopBridge extends EventEmitter {
         if (generation !== this.generation) return;
         entry.owner = owner;
         await client.followThread(entry.id, owner);
+        if(client.readModelSettings)try{entry.modelSettings=await client.readModelSettings(entry.id,owner);}catch{/* Model discovery must not prevent history synchronization. */}
         await client.loadHistory(entry.id, owner);
         if (generation === this.generation) { entry.historyReady = true; this.emit('changed'); }
       } catch { /* Stored history remains viewable without a live desktop owner. */ }
@@ -106,9 +107,12 @@ export class DesktopBridge extends EventEmitter {
         const previous = turns.get(turn.id);
         turns.set(turn.id, { ...turn, input: turn.input || previous?.input,
           agentMessages: turn.agentMessages?.length ? turn.agentMessages : previous?.agentMessages || [],
+          timeline: turn.timeline?.length ? turn.timeline : previous?.timeline || [],
           toolResults: turn.toolResults?.length ? turn.toolResults : previous?.toolResults || [] });
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
+        model: entry.modelSettings?.model || '', reasoningEffort:entry.modelSettings?.reasoningEffort || '',
+        activity: entry.ready ? summary.activity : undefined,
         writable: !!entry.writable, historyReady: !!entry.historyReady,
         // Only the live owner can identify the current turn; cached history may
         // still contain an inProgress status captured before a disconnection.
@@ -138,7 +142,16 @@ export class DesktopBridge extends EventEmitter {
     if (!entry.writable) throw new Error('此聊天仅允许读取，请在电脑授权后操作');
     const state = entry.store.state;
     const active = getTurns(state).findLast(turn => turn.status === 'inProgress');
-    if (command.op === 'start') {
+    if (command.op === 'model') {
+      const {models}=await this.modelOptions(threadId);
+      const model=models.find(row=>row.model===command.model);
+      if(!model || !model.efforts.includes(command.effort))throw Error('模型或思考强度不在电脑可用列表中，请刷新后选择');
+      const result=await this.client.updateModelSettings(threadId,command.model,command.effort,{ownerId:entry.owner});
+      if(!result?.applied)throw Error('电脑未应用模型设置，请刷新重试');
+      entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
+      if(entry.modelSettings?.model!==command.model || entry.modelSettings?.reasoningEffort!==command.effort)throw Error('模型设置回执尚未确认，请刷新后核对');
+      this.emit('changed');
+    } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
       await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
     } else if (command.op === 'steer') {
@@ -164,6 +177,16 @@ export class DesktopBridge extends EventEmitter {
       await this.client[method](threadId, command.requestId, command.decision, entry.owner);
     } else throw new Error('不支持的操作');
     return { accepted: true };
+  }
+  async modelOptions(threadId){
+    const entry=this.entries.get(threadId);
+    if(!entry?.ready)throw Error('桌面聊天尚未就绪');
+    if(!this.modelCatalog || Date.now()-this.modelCatalogAt>60000){
+      if(!this.historyReader?.models)throw Error('当前桌面版本不支持模型列表');
+      this.modelCatalog=await this.historyReader.models();this.modelCatalogAt=Date.now();
+    }
+    entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
+    return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||''}};
   }
   close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer); this.client?.close(); this.historyReader?.close(); }
 }

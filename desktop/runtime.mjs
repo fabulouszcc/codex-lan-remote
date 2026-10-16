@@ -44,18 +44,22 @@ export class GatewayRuntime {
     const devices = await readJson(devicesPath, []);
     const historyReader = config.codexBinary ? new HistoryReader(config.codexBinary) : undefined;
     const bridge = new DesktopBridge(config.threads, { historyReader, allowSelectedChats: config.allowSelectedChats });
-    const gateway = createGateway({ tls: this.tls, bridge, deviceId: this.identity.deviceId, deviceName: config.name, devices, saveDevices: value => atomicJson(devicesPath, value) });
+    const connectionAddresses={ primary:`https://${config.host}:${config.port}`, ...(config.lanHost ? {lan:`https://${config.lanHost}:${config.port}`} : {}) };
+    const gateway = createGateway({ tls: this.tls, bridge, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
+    const servers=[gateway.server];
     gateway.server.on('controlAction', event => { void appendFile(join(this.root, 'actions.local.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 }).catch(() => {}); });
-    try { await new Promise((resolve, reject) => { gateway.server.once('error', reject); gateway.server.listen(config.port, config.host, resolve); }); }
-    catch { bridge.close(); gateway.server.close(); throw Error('无法监听远控地址，请检查端口占用和网卡状态'); }
+    try {
+      await new Promise((resolve, reject) => { gateway.server.once('error', reject); gateway.server.listen(config.port, config.host, resolve); });
+      if(config.lanHost && config.lanHost!==config.host){const lan=gateway.createListener();servers.push(lan);await new Promise((resolve,reject)=>{lan.once('error',reject);lan.listen(config.port,config.lanHost,resolve);});}
+    } catch { bridge.close(); for(const server of servers){server.closeAllConnections();server.close();} throw Error('无法监听远控地址，请检查端口占用和网卡状态'); }
     void bridge.connect();
-    return { config, gateway, bridge };
+    return { config, gateway, bridge, servers };
   }
   async start(config) {
     if (!this.identity) await this.prepareIdentity();
     const prior = this.active;
     if (prior && JSON.stringify(prior.config) === JSON.stringify(config)) return this.status();
-    if (prior && prior.config.host === config.host && prior.config.port === config.port) {
+    if (prior && prior.config.port === config.port) {
       await this.stop();
       try { this.active = await this.candidate(config); }
       catch (error) { this.active = await this.candidate(prior.config).catch(() => null); throw error; }
@@ -67,6 +71,7 @@ export class GatewayRuntime {
   status() {
     const active = this.active;
     return { running: !!active, address: active ? `https://${active.config.host}:${active.config.port}` : null,
+      lanAddress: active?.config.lanHost ? `https://${active.config.lanHost}:${active.config.port}` : null,
       fingerprint: this.identity?.fingerprint, deviceId: this.identity?.deviceId,
       chats: active?.bridge.snapshot().map(row => ({ id: row.id, name: row.name, ready: row.ready, writable: row.writable })) || [],
       devices: active?.gateway.listDevices() || [] };
@@ -78,7 +83,7 @@ export class GatewayRuntime {
   }
   async stop() {
     const active = this.active; if (!active) return;
-    this.active = null; active.bridge.close(); active.gateway.server.closeAllConnections();
-    await new Promise(resolve => active.gateway.server.close(resolve));
+    this.active = null; active.bridge.close();
+    await Promise.all(active.servers.map(server=>{server.closeAllConnections();return new Promise(resolve=>server.close(resolve));}));
   }
 }

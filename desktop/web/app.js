@@ -19,7 +19,7 @@ function showMode(restore = false) {
 }
 function populate(config, state) {
   const value = config || { host: state.addresses[0]?.address || '', port: 9443, name: 'Codex 电脑', threads: [], allowSelectedChats: false, easytier: {} };
-  for (const id of ['name', 'host', 'port', 'codexBinary']) $(id).value = value[id] || '';
+  for (const id of ['name', 'host', 'port', 'lanHost', 'codexBinary']) $(id).value = value[id] || '';
   for (const id of ['allowSelectedChats', 'autoStart']) $(id).checked = !!value[id];
   $('threadIds').value = value.threads.map(row => row.id).join('\n');
   document.querySelector(`input[name=mode][value=${value.mode || 'existing'}]`).checked = true;
@@ -52,7 +52,7 @@ async function action(fn, success) {
 }
 function config() {
   const prior = latest?.config;
-  return { mode: mode(), name: $('name').value, host: $('host').value, port: +$('port').value, codexBinary: $('codexBinary').value,
+  return { mode: mode(), name: $('name').value, host: $('host').value, port: +$('port').value, lanHost: $('lanHost').value, codexBinary: $('codexBinary').value,
     allowSelectedChats: $('allowSelectedChats').checked, autoStart: $('autoStart').checked,
     threads: $('threadIds').value.split(/\r?\n/).map(id => id.trim()).filter(Boolean).map(id => ({ id, name: prior?.threads.find(row => row.id === id)?.name || '桌面聊天' })),
     networkSecret: $('networkSecret').value, clearSecret: $('clearSecret').checked,
@@ -70,5 +70,7 @@ $('pair').onclick = () => action(async () => {
 }, '新的配对码已生成');
 $('copy').onclick = async () => { try { await navigator.clipboard.writeText($('pairingJson').value); feedback('配对信息已复制'); } catch { $('pairingJson').select(); feedback('请手动复制选中的配对信息'); } };
 document.querySelectorAll('input[name=mode]').forEach(input => input.onchange = () => showMode(true));
+document.querySelectorAll('[data-section]').forEach(button => button.onclick = () => $(button.dataset.section).scrollIntoView({ behavior: 'smooth', block: 'center' }));
+$('settingsHelp').onclick = () => feedback('在 Windows 开始菜单搜索“手机连接设置”，或使用桌面同名快捷方式。设置地址的访问凭据会自动获取，不需要保存网址或向聊天发送指令。旧版安装可重新运行新版安装器来创建入口。');
 refresh().catch(error => feedback(error.message, true));
 setInterval(() => { if (!busy) refresh().catch(error => feedback('后台连接中断：' + error.message, true)); }, 5000);

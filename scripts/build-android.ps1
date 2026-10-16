@@ -51,5 +51,5 @@ $taskClasspath = @((Join-Path $taskAndroidBuild 'intermediates\javac\debug\compi
 if ($LASTEXITCODE -ne 0) { throw 'Android 状态逻辑测试失败' }
 $taskOutput = Join-Path $taskRoot '.local\releases'
 New-Item -ItemType Directory -Force -Path $taskOutput | Out-Null
-Copy-Item -LiteralPath (Join-Path $taskAndroidBuild 'outputs\apk\debug\app-debug.apk') -Destination (Join-Path $taskOutput 'codex-lan-0.2.4-preview.apk') -Force
-Write-Output (Join-Path $taskOutput 'codex-lan-0.2.4-preview.apk')
+Copy-Item -LiteralPath (Join-Path $taskAndroidBuild 'outputs\apk\debug\app-debug.apk') -Destination (Join-Path $taskOutput 'codex-lan-0.3.3-preview.apk') -Force
+Write-Output (Join-Path $taskOutput 'codex-lan-0.3.3-preview.apk')

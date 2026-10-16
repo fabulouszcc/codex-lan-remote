@@ -68,16 +68,26 @@ export function getTurns(state) {
   return result;
 }
 
+import { turnTimeline, turnInput } from './turn-timeline.mjs';
 export function summarizeThread(state) {
   const turns = getTurns(state);
+  const active=turns.findLast(turn=>turn.status==='inProgress');
+  let activity;
+  if(active){
+    const items=active.items||[],last=items.at(-1),reasoning=items.findLast(item=>item.type==='reasoning');
+    const visible=reasoning?.summary;
+    const summary=(typeof visible==='string'?visible:Array.isArray(visible)?visible.map(part=>typeof part==='string'?part:typeof part?.text==='string'?part.text:'').join('\n'):'').slice(0,2400);
+    activity={label:state?.requests?.length?'等待处理审批或输入…':last?.type==='commandExecution'&&last.status==='inProgress'?'正在执行工具…':'正在思考…',summary};
+  }
   return {
+    activity,
     id: state?.id, cwd: state?.cwd, runtimeStatus: state?.threadRuntimeStatus?.type,
     turnCount: turns.length,
     turns: turns.map(turn => ({
       id: turn.turnId, status: turn.status, startedAtMs: turn.turnStartedAtMs, durationMs: turn.durationMs,
-      input: turn.params?.input?.filter(input => input.type === 'text').map(input => input.text).join('\n')
-        || (turn.items || []).filter(item => item.type === 'userMessage').flatMap(item => item.content || []).filter(input => input.type === 'text').map(input => input.text).join('\n'),
+      input: turnInput(turn),
       agentMessages: (turn.items || []).filter(item => item.type === 'agentMessage').map(item => item.text),
+      timeline: turnTimeline(turn.items),
       itemTypes: (turn.items || []).map(item => item.type),
       toolResults: (turn.items || []).filter(item => ['commandExecution', 'fileChange'].includes(item.type)).map(item => ({
         id: item.id, type: item.type, status: item.status, exitCode: item.exitCode,

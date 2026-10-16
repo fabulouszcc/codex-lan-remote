@@ -4,13 +4,15 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const tag = 'v0.3.0-preview';
+const tag = process.env.CODEX_LAN_RELEASE_TAG || 'v0.3.0-preview';
+if (!/^v\d+\.\d+\.\d+-preview$/.test(tag)) throw Error('Invalid preview release tag');
+const version = tag.slice(1).replace(/-preview$/, '');
 const repo = process.env.GH_REPO || process.env.GITHUB_REPOSITORY;
 if (!repo) throw Error('Set GH_REPO or GITHUB_REPOSITORY');
 const gh = args => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const release = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`]));
 const rows = [];
-for (const name of ['codex-lan-desktop-0.3.0-preview.zip', 'codex-lan-0.2.4-preview.apk']) {
+for (const name of [`codex-lan-desktop-${version}-preview.zip`, `codex-lan-${version === '0.3.0' ? '0.2.4' : version}-preview.apk`]) {
   const asset = release.assets.find(row => row.name === name);
   if (!asset) continue;
   let digest = asset.digest?.match(/^sha256:([a-f0-9]{64})$/i)?.[1];
@@ -23,8 +25,8 @@ for (const name of ['codex-lan-desktop-0.3.0-preview.zip', 'codex-lan-0.2.4-prev
   }
   rows.push(`${digest.toLowerCase()}  ${name}`);
 }
-if (!rows.length) throw Error('No published installation packages found');
-const introduction = (await readFile('docs/release-0.3.0.md', 'utf8')).split('\n## SHA-256')[0].trimEnd();
+if (rows.length !== 2) throw Error('Both installation packages must exist before updating release notes');
+const introduction = (await readFile(`docs/release-${version}.md`, 'utf8')).split('\n## SHA-256')[0].trimEnd();
 const notes = `${introduction}\n\n## SHA-256\n\n下载后可使用以下 SHA-256 核对文件完整性：\n\n\`\`\`text\n${rows.join('\n')}\n\`\`\`\n`;
 const file = join(tmpdir(), `codex-lan-release-notes-${process.pid}.md`);
 await writeFile(file, notes);

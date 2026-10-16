@@ -17,6 +17,16 @@ class Client extends EventEmitter {
   async loadHistory(id) { this.historyRequests.push(id); }
 }
 const stored = [{ id: 'saved-turn', status: 'completed', input: 'old question', agentMessages: ['old answer'], toolResults: [] }];
+test('model selection validates the real catalog, rejects read-only chats, and requires confirmed settings',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  let settings={model:'one',reasoningEffort:'low'},calls=0;
+  bridge.historyReader.models=async()=>[{model:'one',efforts:['low']},{model:'two',efforts:['high']}];
+  client.readModelSettings=async()=>settings;client.updateModelSettings=async(id,model,effort)=>{calls++;settings={model,reasoningEffort:effort};return {applied:true};};
+  await assert.rejects(bridge.command('active',{op:'model',model:'invented',effort:'high'}),/可用列表/);
+  await assert.rejects(bridge.command('active',{op:'model',model:'two',effort:'ultra'}),/可用列表/);assert.equal(calls,0);
+  await bridge.command('active',{op:'model',model:'two',effort:'high'});assert.equal(bridge.snapshot()[0].model,'two');
+  bridge.entries.get('active').writable=false;await assert.rejects(bridge.command('active',{op:'model',model:'one',effort:'low'}),/只|读取/);assert.equal(calls,1);
+});
 function fixture(threads, options = {}) {
   const client = new Client();
   const historyReader = { list: async () => [{ id: 'active', name: 'active' }, { id: 'other', name: 'other' }], turns: async () => structuredClone(stored), close() {} };

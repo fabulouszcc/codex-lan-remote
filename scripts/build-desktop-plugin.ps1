@@ -4,7 +4,7 @@ $taskRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NodePath) { $NodePath = (Get-Command node.exe -ErrorAction Stop).Source }
 $taskVersion = (& $NodePath --version).Trim()
 if ($taskVersion -notmatch '^v24\.') { throw '桌面插件需要 Node.js 24 运行时' }
-$taskOutput = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.3.0-preview'
+$taskOutput = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.3.3-preview'
 $taskPlugin = Join-Path $taskOutput 'plugins\codex-lan-desktop'
 New-Item -ItemType Directory -Force -Path $taskPlugin | Out-Null
 Copy-Item -LiteralPath (Join-Path $taskRoot 'plugins\codex-lan-desktop\.codex-plugin') -Destination $taskPlugin -Recurse -Force
@@ -20,6 +20,7 @@ New-Item -ItemType Directory -Force -Path $taskRuntime,$taskVendor,$taskScripts,
 Copy-Item -LiteralPath $NodePath -Destination (Join-Path $taskRuntime 'node.exe') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-desktop-plugin.ps1') -Destination $taskScripts -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'prepare-desktop-native.ps1') -Destination $taskScripts -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install-settings-shortcuts.ps1') -Destination $taskScripts -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install-desktop-plugin.ps1') -Destination $taskOutput -Force
 Copy-Item -LiteralPath (Join-Path $taskRoot 'docs\电脑端插件使用指南.md') -Destination (Join-Path $taskOutput 'README.md') -Force
 $taskMarketplace = Join-Path $taskOutput '.agents\plugins'
@@ -93,7 +94,7 @@ Set-Content -LiteralPath (Join-Path $taskLicenses 'SOURCES.txt') -Value $taskNot
 $taskHashes = @{}
 foreach ($taskFile in @(Get-ChildItem -LiteralPath $taskRuntime,$taskVendor -File)) { $taskHashes[$taskFile.Name] = (Get-FileHash -LiteralPath $taskFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 $taskHashes | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskPlugin 'dependency-hashes.json') -Encoding utf8
-$taskZip = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.3.0-preview.zip'
+$taskZip = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.3.3-preview.zip'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $taskZipStream = [IO.File]::Open($taskZip, [IO.FileMode]::Create)
 $taskZipWriter = [IO.Compression.ZipArchive]::new($taskZipStream, [IO.Compression.ZipArchiveMode]::Create)
