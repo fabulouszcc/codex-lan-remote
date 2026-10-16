@@ -4,6 +4,13 @@ import org.json.*;
 import static org.junit.Assert.*;
 
 public class MobileStateTest {
+    @Test public void refreshCancellationDoesNotTurnAnOnlineSessionOfflineOrCommitAnOldChatResponse(){
+        assertTrue(MobileState.pollObsolete(4,5,"chat","chat",true));
+        assertTrue(MobileState.pollObsolete(4,4,"chat","other",true));
+        assertTrue(MobileState.pollObsolete(4,4,"chat","chat",false));
+        // A real failure from the current request must still report offline.
+        assertFalse(MobileState.pollObsolete(4,4,"chat","chat",true));
+    }
     @Test public void quickNavigationShowsHumanAnswerInsteadOfQuestionTransportMarkup() throws Exception {
         JSONObject item=new JSONObject().put("text","<send_user_message_question_reply>\n[{\"questionItemId\":\"private-id\",\"answer\":\"已经解锁\"}]\n</send_user_message_question_reply>");
         assertEquals("已经解锁",ChatRows.navigationText(item));

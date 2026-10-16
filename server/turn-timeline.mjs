@@ -15,6 +15,7 @@ export function turnTimeline(items = []) {
   let budget = 24000;
   const clip = (value, limit, row) => {
     if (value == null) return '';
+    if (budget <= 0) { row.truncated = true; return ''; }
     const string = typeof value === 'string' ? value : JSON.stringify(value);
     const count = Math.min(limit, Math.max(0, budget)); budget -= Math.min(string.length, count);
     if (string.length > count) row.truncated = true;

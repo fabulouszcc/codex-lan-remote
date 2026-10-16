@@ -15,7 +15,7 @@ export class ThreadState {
       throw new Error('State revision gap: fetch a fresh snapshot');
     }
     if (!Array.isArray(change.patches)) throw new Error('Invalid state patches');
-    let next = structuredClone(this.state);
+    let next = this.state;
     for (const patch of change.patches) next = applyPatch(next, patch);
     this.state = next;
     this.revision = change.revision;
@@ -30,10 +30,17 @@ function applyPatch(root, patch) {
     if (patch.op === 'remove') throw new Error('Cannot remove root state');
     return structuredClone(patch.value);
   }
+  // Clone only ancestors of the changed path. Old snapshots stay immutable,
+  // and unchanged large tool payloads are not copied for every streaming delta.
+  const copy = value => Array.isArray(value) ? value.slice() : { ...value };
+  if (!root || typeof root !== 'object') throw new Error('Invalid patch parent');
+  root = copy(root);
   let parent = root;
   for (const key of patch.path.slice(0, -1)) {
     if (!parent || typeof parent !== 'object' || !Object.hasOwn(parent, key)) throw new Error('Missing patch parent');
-    parent = parent[key];
+    const child = parent[key];
+    if (!child || typeof child !== 'object') throw new Error('Invalid patch parent');
+    parent[key] = copy(child); parent = parent[key];
   }
   if (!parent || typeof parent !== 'object') throw new Error('Invalid patch parent');
   const key = patch.path.at(-1);

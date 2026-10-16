@@ -541,7 +541,7 @@ public final class MainActivity extends Activity {
         TextView networkHint=settingRow(items,"EasyTier 组网",EasyTierVpnService.state,this::easyTierDialog);
         settingRow(items,"通知与后台运行","任务完成、审批提醒与系统权限",this::notificationSettings);
         settingRow(items,"重新同步","重新连接电脑并刷新聊天状态",()->{beginPolling(true);toast("正在重新同步");});
-        items.addView(text("关于",13,muted));items.addView(text("Codex LAN · 0.3.3 Preview\n非官方远控客户端",14,muted));
+        items.addView(text("关于",13,muted));items.addView(text("Codex LAN · 0.3.4 Preview\n非官方远控客户端",14,muted));
         settingRow(items,"清除本机配对","删除本机连接信息，重新配对电脑",()->new AlertDialog.Builder(this).setTitle("清除本机配对？").setMessage("手机上的连接信息将删除。电脑端的授权记录仍需在电脑撤销；EasyTier 配置保留。")
             .setNegativeButton("返回",null).setPositiveButton("清除",(d,w)->{generation++;api.cancel();stopService(new android.content.Intent(this,SessionService.class));SessionService.latest=null;api=null;currentState=null;selectedThreadId="";drafts.clear();storage.clear();dialog.dismiss();connectionPage();}).show());
         android.os.Handler refresh=new android.os.Handler(getMainLooper());Runnable networkRefresh=new Runnable(){public void run(){networkHint.setText(EasyTierVpnService.state);if(dialog.isShowing())refresh.postDelayed(this,1000);}};dialog.setOnDismissListener(d->refresh.removeCallbacks(networkRefresh));

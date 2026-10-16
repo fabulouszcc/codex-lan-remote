@@ -28,11 +28,12 @@ public final class SessionService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (intent == null || "stop".equals(intent.getAction())) { stopSelf(); return START_NOT_STICKY; }
         try {
+            long beforeRefresh=refreshVersion;
             if(started && "switch-address".equals(intent.getAction())) {
                 JSONObject saved=new SecureSession(this).load();
                 if(saved==null || !api.fingerprint.equals(saved.optString("fingerprint")))throw new Exception("切换地址需要相同电脑身份");
                 RemoteApi replacement=new RemoteApi(saved.getString("address"),saved.getString("fingerprint"),saved.getString("token"));
-                api.cancel();api=replacement;refreshVersion++;
+                api=replacement;refreshVersion++;
             }
             if (!started) {
                 JSONObject connection = new SecureSession(this).load(); if (connection == null) { stopSelf(); return START_NOT_STICKY; }
@@ -45,8 +46,10 @@ public final class SessionService extends Service {
                 else startForeground(8, notifications.background());
                 started = true; worker.execute(this::poll);
             }
-            if (intent.hasExtra("threadId") && !intent.getStringExtra("threadId").equals(selection)) { selection = intent.getStringExtra("threadId"); api.cancel(); }
-            if ("refresh".equals(intent.getAction())) { refreshVersion++; api.cancel(); }
+            if (intent.hasExtra("threadId") && !intent.getStringExtra("threadId").equals(selection)) { selection = intent.getStringExtra("threadId"); refreshVersion++; }
+            if ("refresh".equals(intent.getAction())) refreshVersion++;
+            // A refresh wakes only the read poll, never an approval submission.
+            if (beforeRefresh!=refreshVersion) cancelPoll();
             if ("approval".equals(intent.getAction())) {
                 String payload = intent.getStringExtra("command");
                 worker.execute(() -> {
@@ -62,22 +65,32 @@ public final class SessionService extends Service {
         return START_NOT_STICKY;
     }
     private void broadcast() { sendBroadcast(new Intent(UPDATE).setPackage(getPackageName())); }
+    private final Object pollLock = new Object();
+    private RemoteApi pollApi;
+    private void cancelPoll(){synchronized(pollLock){if(pollApi!=null)pollApi.cancel();}}
     private void poll() {
         String version = "", opened = ""; long catalogAt = 0, savedAt = 0, refreshed = refreshVersion;
         JSONArray catalog = latest.optJSONArray("catalog"); if (catalog == null) catalog = new JSONArray();
         while (!stopped) {
+            long epoch=refreshVersion;String requestedSelection=selection;RemoteApi owner=api;
+            RemoteApi polling=null;
             try {
+                polling=new RemoteApi(owner.address,owner.fingerprint,owner.token);
+                synchronized(pollLock){pollApi=polling;}
                 String desired = selection == null ? "" : selection;
                 if (refreshed != refreshVersion) { refreshed = refreshVersion; version = ""; opened = ""; catalogAt = 0; }
                 if (!desired.isEmpty() && !desired.equals(opened)) {
-                    api.call("POST", "/v1/select", new JSONObject().put("threadId", desired), null); opened = desired; version = "";
+                    polling.call("POST", "/v1/select", new JSONObject().put("threadId", desired), null); opened = desired; version = "";
                 }
                 if (System.currentTimeMillis() - catalogAt > 15000) {
-                    try { catalog = api.call("GET", "/v1/threads", null, null).getJSONArray("threads"); catalogAt = System.currentTimeMillis(); } catch (Exception ignored) {}
+                    try { catalog = polling.call("GET", "/v1/threads", null, null).getJSONArray("threads"); catalogAt = System.currentTimeMillis(); } catch (Exception ignored) {}
                 }
-                JSONObject incoming = api.call("GET", "/v1/state" + (version.isEmpty() ? "" : "?after=" + version), null, null);
+                if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api))continue;
+                JSONObject incoming = polling.call("GET", "/v1/state" + (version.isEmpty() ? "" : "?after=" + version), null, null);
+                if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api))continue;
                 version = String.valueOf(incoming.getLong("version"));
                 JSONObject previous = latest, merged = MobileState.merge(previous, incoming);
+                if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api))continue;
                 if (selection == null || selection.isEmpty()) {
                     JSONArray threads = merged.optJSONArray("threads"); if (threads != null && threads.length() > 0) selection = threads.getJSONObject(0).getString("id");
                 }
@@ -92,15 +105,16 @@ public final class SessionService extends Service {
                 broadcast();
             } catch (Exception error) {
                 if (stopped) break;
+                if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api)){version="";opened="";continue;}
                 try { latest = MobileState.offline(latest); notifications.disconnected(); } catch (Exception ignored) {}
                 message = "连接中断，正在重连"; broadcast();
                 try { Thread.sleep(2000); } catch (InterruptedException ignored) { break; }
                 version = ""; opened = "";
-            }
+            } finally { synchronized(pollLock){if(pollApi==polling)pollApi=null;}if(polling!=null)polling.cancel(); }
         }
     }
     @Override public void onDestroy() {
-        stopped = true; if (api != null) api.cancel(); if (notifications != null) notifications.disconnected();
+        stopped = true;cancelPoll(); if (api != null) api.cancel(); if (notifications != null) notifications.disconnected();
         try { if (latest != null) latest = MobileState.offline(latest); if (cache != null && latest != null) cache.save(latest); } catch (Exception ignored) {}
         worker.shutdownNow(); stopForeground(STOP_FOREGROUND_REMOVE); message = "后台同步已停止"; broadcast(); super.onDestroy();
     }

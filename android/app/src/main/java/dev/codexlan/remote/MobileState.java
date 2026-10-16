@@ -7,6 +7,9 @@ import java.util.Iterator;
 
 /** Merge wire snapshots without erasing locally retained history on a reconnect. */
 final class MobileState {
+    static boolean pollObsolete(long started,long current,String requested,String selected,boolean sameClient){
+        return started!=current || !sameClient || !java.util.Objects.equals(requested,selected);
+    }
     static String connectionAddress(String value) throws Exception {
         String input=value.trim();if(!input.contains("://"))input="https://"+input;
         java.net.URI uri=new java.net.URI(input);int port=uri.getPort()==-1?9443:uri.getPort();

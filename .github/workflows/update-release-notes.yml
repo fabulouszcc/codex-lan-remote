@@ -4,7 +4,7 @@ on:
     inputs:
       tag:
         description: Existing preview release tag
-        default: v0.3.3-preview
+        default: v0.3.4-preview
         required: true
         type: string
 permissions:

@@ -9,7 +9,7 @@ await runtime.prepareIdentity();
 const server = createServer(runtime.tls);
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
 await new Promise(resolve => server.close(resolve));
-const bin = resolve('.local/releases/codex-lan-desktop-0.3.3-preview/plugins/codex-lan-desktop/vendor/easytier');
+const bin = resolve('.local/releases/codex-lan-desktop-0.3.4-preview/plugins/codex-lan-desktop/vendor/easytier');
 const { stdout: version } = await run(join(bin, 'easytier-core.exe'), ['--version'], { windowsHide: true });
 // Check a separate local-only config without creating any TUN, listeners,
 // managed instances, or contacting the user's existing EasyTier RPC.

@@ -27,6 +27,12 @@ test('decoder rejects zero/oversize frames before allocating and rejects invalid
   assert.throws(() => new FrameDecoder(() => {}).push(Buffer.from([1, 0, 0, 0, 0xff])), /encoded data/);
   assert.throws(() => new FrameDecoder(() => {}).push(Buffer.from([1, 0, 0, 0, 0x7b])), SyntaxError);
 });
+test('desktop subscriptions accept large valid chat frames while retaining a hard size limit',()=>{
+  const client=new DesktopIpcClient();const header=Buffer.alloc(4);header.writeUInt32LE(50*1024*1024);
+  assert.doesNotThrow(()=>client.decoder.push(header));assert.equal(client.decoder.body.length,50*1024*1024);client.close();
+  const other=new DesktopIpcClient();header.writeUInt32LE(129*1024*1024);
+  assert.throws(()=>other.decoder.push(header),error=>error.code==='IPC_FRAME_SIZE'&&error.frameBytes===129*1024*1024);assert.equal(other.decoder.body,null);other.close();
+});
 
 async function fixture(t, onRequest, options = {}) {
   const pipePath = process.platform === 'win32'

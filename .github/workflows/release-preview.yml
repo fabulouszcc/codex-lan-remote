@@ -32,14 +32,14 @@ jobs:
       - name: Fetch verified Android APK
         shell: pwsh
         run: |
-          $apk = '.local/releases/codex-lan-0.3.3-preview.apk'
-          Invoke-WebRequest 'https://raw.githubusercontent.com/fabulouszcc/codex-lan-remote/a3d4f249fb9d550ad0bd5c436805b5d78bd519ba/codex-lan-0.3.3-preview.apk' -OutFile $apk
-          if ((Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash -ne '20EC5A0675071D7A3477D0DA1D89738B99DEC10B0C19E50996B37DC4847B8E97') { throw 'Android APK checksum mismatch' }
+          $apk = '.local/releases/codex-lan-0.3.4-preview.apk'
+          Invoke-WebRequest 'https://raw.githubusercontent.com/fabulouszcc/codex-lan-remote/87b03fc3d9259fb83be5789813b8406573b4a685/codex-lan-0.3.4-preview.apk' -OutFile $apk
+          if ((Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash -ne '16192E3BB563D9F8B2FA024E0520722931D5A400C49A8B6F2FDDAB3021E0B7AC') { throw 'Android APK checksum mismatch' }
       - name: Check package privacy
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          foreach ($file in @('.local/releases/codex-lan-desktop-0.3.3-preview.zip', '.local/releases/codex-lan-0.3.3-preview.apk')) {
+          foreach ($file in @('.local/releases/codex-lan-desktop-0.3.4-preview.zip', '.local/releases/codex-lan-0.3.4-preview.apk')) {
             $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $PWD $file))
             try {
               $bad = @($zip.Entries | Where-Object { $_.FullName -match '(?i)(\.local/|\.local\.(json|md)|shared_prefs/|databases/|\.(keystore|pfx|pem|key|crt)$|Packet\.dll$)' })
@@ -51,14 +51,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          CODEX_LAN_RELEASE_TAG: v0.3.3-preview
+          CODEX_LAN_RELEASE_TAG: v0.3.4-preview
         run: |
-          gh release view v0.3.3-preview *> $null
+          gh release view v0.3.4-preview *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create v0.3.3-preview --target $env:GITHUB_SHA --prerelease --title 'Codex LAN Remote 0.3.3 Preview' --notes-file docs/release-0.3.3.md
+            gh release create v0.3.4-preview --target $env:GITHUB_SHA --prerelease --title 'Codex LAN Remote 0.3.4 Preview' --notes-file docs/release-0.3.4.md
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
-          gh release upload v0.3.3-preview .local/releases/codex-lan-desktop-0.3.3-preview.zip .local/releases/codex-lan-0.3.3-preview.apk --clobber
+          gh release upload v0.3.4-preview .local/releases/codex-lan-desktop-0.3.4-preview.zip .local/releases/codex-lan-0.3.4-preview.apk --clobber
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node scripts/update-release-notes.mjs
           exit $LASTEXITCODE

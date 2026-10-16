@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 import { ThreadState, getTurns, summarizeThread } from '../server/thread-state.mjs';
 import { turnTimeline } from '../server/turn-timeline.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
+test('streaming patches preserve old snapshots and share untouched large branches',()=>{
+  const store=new ThreadState();store.apply({type:'snapshot',revision:1,conversationState:{large:{payload:'x'.repeat(1000000)},turns:[{text:'before'}]}});
+  const before=store.state;store.apply({type:'patches',baseRevision:1,revision:2,patches:[{op:'replace',path:['turns',0,'text'],value:'after'}]});
+  assert.equal(before.turns[0].text,'before');assert.equal(store.state.turns[0].text,'after');assert.equal(store.state.large,before.large);assert.notEqual(store.state.turns,before.turns);
+  const valid=store.state;assert.throws(()=>store.apply({type:'patches',baseRevision:2,revision:3,patches:[{op:'replace',path:['large','payload'],value:'changed'},{op:'replace',path:['missing'],value:'invalid'}]}));
+  assert.equal(store.state,valid);assert.equal(valid.large.payload.length,1000000);
+});
 test('live activity exposes only visible reasoning summary and disappears when the turn completes',()=>{
   const state={turns:[{turnId:'t',status:'inProgress',items:[{type:'reasoning',summary:[{text:'Visible progress'}],content:[{text:'PRIVATE'}],encryptedContent:'PRIVATE'}]}]};
   const activity=summarizeThread(state).activity;assert.equal(activity.summary,'Visible progress');assert.ok(!JSON.stringify(activity).includes('PRIVATE'));assert.match(activity.label,/思考/);

@@ -51,7 +51,11 @@ export class FrameDecoder {
         this.headerBytes += size;
         if (this.headerBytes !== 4) continue;
         const length = this.header.readUInt32LE(0);
-        if (!length || length > this.maxFrameBytes) throw new Error('Invalid IPC frame length');
+        if (!length || length > this.maxFrameBytes) {
+          const error = new Error('Invalid IPC frame length');
+          error.code = 'IPC_FRAME_SIZE'; error.frameBytes = length; error.maxFrameBytes = this.maxFrameBytes;
+          throw error;
+        }
         this.body = Buffer.allocUnsafe(length);
         this.bodyBytes = 0;
         this.headerBytes = 0;
@@ -87,7 +91,9 @@ export class DesktopIpcClient extends EventEmitter {
     this.pipePath = pipePath;
     this.timeoutMs = timeoutMs;
     this.#controlThreadIds = new Set(controlThreadIds);
-    this.decoder = new FrameDecoder(message => this.#onMessage(message), { maxFrameBytes });
+    // A valid long desktop chat can exceed 32 MiB (tool payloads are part of
+    // its snapshot). Keep a finite limit, separate from the bounded phone projection.
+    this.decoder = new FrameDecoder(message => this.#onMessage(message), { maxFrameBytes: maxFrameBytes ?? 128 * 1024 * 1024 });
   }
   get initialized() { return this.#connected && this.#clientId !== 'initializing-client' && !this.#closed; }
 
