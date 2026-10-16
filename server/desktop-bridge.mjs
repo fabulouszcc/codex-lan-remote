@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { ThreadState, getTurns, summarizeThread } from './thread-state.mjs';
+import { pendingQuestions, validateAnswers } from './user-questions.mjs';
 
 export class DesktopBridge extends EventEmitter {
   constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader, allowSelectedChats = false } = {}) {
@@ -105,13 +106,18 @@ export class DesktopBridge extends EventEmitter {
       const turns = new Map((entry.history || []).map(turn => [turn.id, turn]));
       for (const turn of summary.turns) {
         const previous = turns.get(turn.id);
+        // Replacing a Map value preserves its old insertion position. Reinsert
+        // live turns in canonical order so late history hydration cannot leave
+        // an ancient turn at the tail and trim a recent one from the window.
+        turns.delete(turn.id);
         turns.set(turn.id, { ...turn, input: turn.input || previous?.input,
           agentMessages: turn.agentMessages?.length ? turn.agentMessages : previous?.agentMessages || [],
           timeline: turn.timeline?.length ? turn.timeline : previous?.timeline || [],
           toolResults: turn.toolResults?.length ? turn.toolResults : previous?.toolResults || [] });
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
-        model: entry.modelSettings?.model || '', reasoningEffort:entry.modelSettings?.reasoningEffort || '',
+        model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
+        serviceTier:state?.latestThreadSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
         writable: !!entry.writable, historyReady: !!entry.historyReady,
         // Only the live owner can identify the current turn; cached history may
@@ -121,6 +127,7 @@ export class DesktopBridge extends EventEmitter {
         activeTurnId: entry.ready ? getTurns(state).findLast(turn => turn.status === 'inProgress')?.turnId ?? '' : '',
         revision: entry.store.revision, runtimeStatus: summary.runtimeStatus || 'unavailable',
         turns: [...turns.values()].slice(-50),
+        questions: entry.ready ? pendingQuestions(state).map(q => ({ ...q, submitting: entry.consumed.has(JSON.stringify(['question', q.turnId, q.id])) })) : [],
         approvals: (entry.ready ? state?.requests || [] : []).flatMap(request => {
           const type = String(request.type || request.method || '');
           const kind = /command/i.test(type) ? 'command' : /file/i.test(type) ? 'file' : null;
@@ -146,10 +153,15 @@ export class DesktopBridge extends EventEmitter {
       const {models}=await this.modelOptions(threadId);
       const model=models.find(row=>row.model===command.model);
       if(!model || !model.efforts.includes(command.effort))throw Error('模型或思考强度不在电脑可用列表中，请刷新后选择');
-      const result=await this.client.updateModelSettings(threadId,command.model,command.effort,{ownerId:entry.owner});
+      if(command.serviceTier!==undefined && command.serviceTier!=='default' && !(model.serviceTiers||[]).some(tier=>tier.id===command.serviceTier&&tier.id==='priority'))throw Error('此模型未提供所选速度');
+      const result=await this.client.updateModelSettings(threadId,command.model,command.effort,{ownerId:entry.owner,serviceTier:command.serviceTier});
       if(!result?.applied)throw Error('电脑未应用模型设置，请刷新重试');
       entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
       if(entry.modelSettings?.model!==command.model || entry.modelSettings?.reasoningEffort!==command.effort)throw Error('模型设置回执尚未确认，请刷新后核对');
+      if(command.serviceTier!==undefined){
+        for(let i=0;i<20&&(entry.store.state?.latestThreadSettings?.serviceTier??'default')!==command.serviceTier;i++)await new Promise(resolve=>setTimeout(resolve,50));
+        if((entry.store.state?.latestThreadSettings?.serviceTier??'default')!==command.serviceTier)throw Error('电脑速度设置尚未确认，请刷新后核对');
+      }
       this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
@@ -160,6 +172,20 @@ export class DesktopBridge extends EventEmitter {
     } else if (command.op === 'interrupt') {
       if (!active || command.turnId !== active.turnId) throw new Error('任务已变化，请刷新后重试');
       await this.client.interruptTurn(threadId, active.turnId, entry.owner);
+    } else if (command.op === 'answer') {
+      const request = pendingQuestions(state).find(q => q.id === command.requestId && q.turnId === command.turnId);
+      if (!request) throw Error('问题已处理或任务已变化，请刷新');
+      const answers = validateAnswers(request, command.answers);
+      const key = JSON.stringify(['question', request.turnId, request.id]);
+      if (entry.consumed.has(key)) throw Error('回答已提交，请等待电脑确认');
+      entry.consumed.add(key);
+      if (entry.consumed.size > 1000) entry.consumed.delete(entry.consumed.values().next().value);
+      if (request.kind === 'native') await this.client.replyUserInput(threadId, request.id, answers, entry.owner);
+      else {
+        const replies = request.questions.map(q => ({ questionItemId: q.id, question: q.title, answer: answers[q.id].answers[0] }));
+        await this.client.steerTurn(threadId, '<send_user_message_question_reply>\n' + JSON.stringify(replies) + '\n</send_user_message_question_reply>', { ownerId: entry.owner, cwd: state.cwd });
+      }
+      this.emit('changed');
     } else if (command.op === 'approve') {
       if (command.turnId && command.turnId !== active?.turnId) throw new Error('审批轮次已变化，请刷新后操作');
       const request = state.requests?.find(value => (value.id ?? value.requestId) === command.requestId);
@@ -186,7 +212,7 @@ export class DesktopBridge extends EventEmitter {
       this.modelCatalog=await this.historyReader.models();this.modelCatalogAt=Date.now();
     }
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
-    return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||''}};
+    return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
   }
   close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer); this.client?.close(); this.historyReader?.close(); }
 }

@@ -7,11 +7,17 @@ public final class EasyTierProfile {
     public static final String INSTANCE = "codex-lan-android";
     public final String name, secret, address, subnet, peers;
     public final int prefix;
+    public final boolean dhcp;
     public EasyTierProfile(String name, String secret, String cidr, String peers) throws Exception {
+        this(name, secret, cidr, peers, false);
+    }
+    // In DHCP mode cidr describes the expected network, never a requested phone IP.
+    public EasyTierProfile(String name, String secret, String cidr, String peers, boolean dhcp) throws Exception {
+        this.dhcp = dhcp;
         this.name = name.trim(); this.secret = secret; this.peers = peers.trim();
         if (this.name.isEmpty() || this.name.length() > 128 || secret.length() > 512) throw new Exception("网络名称不能为空，且名称/密钥长度不能过长");
         String[] parts = cidr.trim().split("/", -1);
-        if (parts.length != 2 || !parts[1].matches("[0-9]{1,2}")) throw new Exception("请填写手机虚拟 IPv4/前缀，例如 192.168.100.14/24");
+        if (parts.length != 2 || !parts[1].matches("[0-9]{1,2}")) throw new Exception("请填写手机虚拟 IPv4/前缀，例如 10.90.0.2/24");
         prefix = Integer.parseInt(parts[1]);
         if (prefix < 8 || prefix > 30) throw new Exception("预览版支持 /8 至 /30 的虚拟子网");
         address = parts[0]; long ip = ipv4(address);
@@ -50,10 +56,22 @@ public final class EasyTierProfile {
     }
     public String toml() {
         StringBuilder config = new StringBuilder("instance_name = ").append(quote(INSTANCE))
-            .append("\nhostname = \"codex-lan-android\"\ndhcp = false\nipv4 = ").append(quote(address + "/" + prefix))
-            .append("\nlisteners = []\nrpc_portal = \"127.0.0.1:0\"\n[network_identity]\nnetwork_name = ").append(quote(name))
+            .append("\nhostname = \"codex-lan-android\"\ndhcp = ").append(dhcp);
+        if (!dhcp) config.append("\nipv4 = ").append(quote(address + "/" + prefix));
+        config.append("\nlisteners = []\nrpc_portal = \"127.0.0.1:0\"\n[network_identity]\nnetwork_name = ").append(quote(name))
             .append("\nnetwork_secret = ").append(quote(secret)).append('\n');
         for (String peer : peers.split("\\r?\\n")) if (!peer.trim().isEmpty()) config.append("\n[[peer]]\nuri = ").append(quote(peer.trim())).append('\n');
         return config.append("\n[flags]\nenable_encryption = true\nenable_ipv6 = false\n").toString();
+    }
+    public EasyTierProfile assigned(org.json.JSONObject value) throws Exception {
+        org.json.JSONObject raw = value.getJSONObject("address");
+        Object number = raw.get("addr"), length = value.get("network_length");
+        if (!(number instanceof Number) || !(length instanceof Number)) throw new Exception("虚拟地址格式无效");
+        long ip = ((Number)number).longValue(); int bits = ((Number)length).intValue();
+        if (ip < 0 || ip > 0xffffffffL || ((Number)number).doubleValue() != ip || ((Number)length).doubleValue() != bits) throw new Exception("虚拟地址格式无效");
+        String host = ((ip >>> 24)&255)+"."+((ip >>> 16)&255)+"."+((ip >>> 8)&255)+"."+(ip&255);
+        EasyTierProfile assigned = new EasyTierProfile(name,secret,host+"/"+bits,peers);
+        if (assigned.prefix != prefix || !assigned.subnet.equals(subnet)) throw new Exception("分配地址不在电脑虚拟子网中");
+        return assigned;
     }
 }

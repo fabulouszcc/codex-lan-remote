@@ -11,6 +11,11 @@ final class UiIcon extends Drawable {
     @Override public void draw(Canvas canvas) {
         canvas.save(); canvas.translate(getBounds().left, getBounds().top); canvas.scale(getBounds().width()/24f, getBounds().height()/24f);
         switch (name) {
+            case "scan": line(canvas,4,9,4,4);line(canvas,4,4,9,4);line(canvas,15,4,20,4);line(canvas,20,4,20,9);line(canvas,20,15,20,20);line(canvas,20,20,15,20);line(canvas,9,20,4,20);line(canvas,4,20,4,15);line(canvas,7,12,17,12);break;
+            case "bolt-filled": Path bolt=new Path();bolt.moveTo(13,3);bolt.lineTo(5,13);bolt.lineTo(11,13);bolt.lineTo(9,21);bolt.lineTo(19,10);bolt.lineTo(13,10);bolt.close();paint.setStyle(Paint.Style.FILL);canvas.drawPath(bolt,paint);paint.setStyle(Paint.Style.STROKE);break;
+            case "search": canvas.drawCircle(10.5f,10.5f,6.5f,paint);line(canvas,15.5f,15.5f,20,20);break;
+            case "bolt": line(canvas,13,3,5,13); line(canvas,5,13,11,13); line(canvas,11,13,9,21); line(canvas,9,21,19,10); line(canvas,19,10,13,10); line(canvas,13,10,13,3); break;
+            case "reset": canvas.drawArc(4,4,20,20,-145,310,false,paint); line(canvas,4,4,4,10); line(canvas,4,10,10,10); break;
             case "menu": line(canvas,4,7,20,7); line(canvas,4,12,16,12); line(canvas,4,17,20,17); break;
             case "send": line(canvas,12,19,12,5); line(canvas,6,11,12,5); line(canvas,12,5,18,11); break;
             case "stop": canvas.drawRoundRect(6,6,18,18,2,2,paint); break;

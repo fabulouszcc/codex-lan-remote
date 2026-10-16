@@ -221,10 +221,11 @@ export class DesktopIpcClient extends EventEmitter {
     return response.result;
   }
 
-  updateModelSettings(threadId, model, effort, { ownerId } = {}) {
+  updateModelSettings(threadId, model, effort, { ownerId, serviceTier } = {}) {
     if (typeof model !== 'string' || !model.trim() || model.length > 160) throw Error('Invalid model');
     if (typeof effort !== 'string' || !effort || effort.length > 32) throw Error('Invalid reasoning effort');
-    return this.#control(threadId, 'thread-follower-update-thread-settings', { threadSettings: { model, effort } }, ownerId);
+    if(serviceTier!==undefined && !['default','priority'].includes(serviceTier))throw Error('Invalid service tier');
+    return this.#control(threadId, 'thread-follower-update-thread-settings', { threadSettings: { model, effort,...serviceTier===undefined?{}:{serviceTier} } }, ownerId);
   }
 
   enableThreadControl(threadId) {
@@ -278,6 +279,10 @@ export class DesktopIpcClient extends EventEmitter {
   replyFileApproval(threadId, requestId, decision, ownerId) {
     if (!['accept', 'decline', 'cancel'].includes(decision)) throw new Error('Unsupported single-request approval decision');
     return this.#control(threadId, 'thread-follower-file-approval-decision', { requestId, decision }, ownerId);
+  }
+
+  replyUserInput(threadId, requestId, answers, ownerId) {
+    return this.#control(threadId, 'thread-follower-submit-user-input', { requestId, response: { answers } }, ownerId);
   }
 
   async followThread(threadId, ownerId) {

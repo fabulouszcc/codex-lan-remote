@@ -33,7 +33,7 @@ export function turnTimeline(items = []) {
         (item.serverClientUserMessageId && user.clientId === item.serverClientUserMessageId));
       return replaced ? [] : [{ id: item.id || `steer:${index}`, type: 'user', text: userText(item.input) }];
     }
-    if (item.type === 'agentMessage') return [{ id: item.id || `message:${index}`, type: 'message', text: item.text || '', phase: item.phase }];
+    if (item.type === 'agentMessage') return [{ id: item.id || `message:${index}`, type: 'message', text: item.text || (item.questions || []).map(q => q.title).join('\n\n'), phase: item.phase }];
     if (!toolTypes.has(item.type)) return [];
     const row = { id: item.id || `tool:${index}`, type: 'tool', toolType: item.type,
       status: item.status || (item.type === 'functionCallOutput' ? 'completed' : ''),

@@ -7,6 +7,9 @@ import java.util.Iterator;
 
 /** Merge wire snapshots without erasing locally retained history on a reconnect. */
 final class MobileState {
+    static boolean viewportAtBottom(int count,int lastVisible,int lastBottom,int height,int paddingBottom,int tolerance){
+        return count==0||(lastVisible>=count-1&&lastBottom<=height-paddingBottom+tolerance);
+    }
     static boolean pollObsolete(long started,long current,String requested,String selected,boolean sameClient){
         return started!=current || !sameClient || !java.util.Objects.equals(requested,selected);
     }
@@ -79,29 +82,38 @@ final class MobileState {
         if (!thread.optBoolean("writable", true)) return "此聊天仅允许读取，需要在电脑授权后发送";
         return "";
     }
+    private static JSONObject copyFields(JSONObject source) throws Exception {
+        JSONObject result=new JSONObject();java.util.Iterator<String> keys=source.keys();
+        while(keys.hasNext()){String key=keys.next();result.put(key,source.get(key));}return result;
+    }
     static JSONObject merge(JSONObject previous, JSONObject incoming) throws Exception {
+        if(incoming!=null&&"delta".equals(incoming.optString("sync"))&&(previous==null||incoming.optLong("baseVersion",-1)!=previous.optLong("version",-2)))throw new Exception("增量同步基线已变化，需要完整同步");
         LinkedHashMap<String, JSONObject> threads = new LinkedHashMap<>();
         for (JSONObject source : new JSONObject[] { previous, incoming }) {
             JSONArray values = source == null ? null : source.optJSONArray("threads");
             if (values == null) continue;
             for (int i = 0; i < values.length(); i++) {
-                JSONObject thread = new JSONObject(values.getJSONObject(i).toString());
-                if (source == previous) thread.put("ready", false).put("approvals", new JSONArray());
+                JSONObject thread = copyFields(values.getJSONObject(i));
+                if (source == previous) thread.put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray());
                 String id = thread.getString("id"); JSONObject old = threads.get(id);
                 LinkedHashMap<String, JSONObject> turns = new LinkedHashMap<>();
                 for (JSONObject version : new JSONObject[] { old, thread }) {
                     JSONArray entries = version == null ? null : version.optJSONArray("turns"); if (entries == null) continue;
                     for (int j = 0; j < entries.length(); j++) {
-                        JSONObject next = new JSONObject(entries.getJSONObject(j).toString()); String key = next.getString("id");
+                        JSONObject next = copyFields(entries.getJSONObject(j)); String key = next.getString("id");
                         JSONObject prior = turns.get(key);
                         if (prior != null) {
                             if (next.optString("input").isEmpty()) next.put("input", prior.optString("input"));
                             if (next.optJSONArray("agentMessages") == null || next.getJSONArray("agentMessages").length() == 0) next.put("agentMessages", prior.optJSONArray("agentMessages"));
                             if (next.optJSONArray("timeline") == null || next.getJSONArray("timeline").length() == 0) next.put("timeline", prior.optJSONArray("timeline"));
                         }
-                        turns.put(key, next);
+                        // Incoming order is authoritative, including when repairing
+                        // a cached snapshot whose last entry was actually old.
+                        turns.remove(key); turns.put(key, next);
                     }
                 }
+                JSONArray order=thread.optJSONArray("turnOrder");
+                if(source==incoming&&order!=null){LinkedHashMap<String,JSONObject> ordered=new LinkedHashMap<>();for(int j=0;j<order.length();j++){String key=order.getString(j);JSONObject value=turns.get(key);if(value==null)throw new Exception("聊天缓存缺失，需要完整同步");ordered.put(key,value);}turns=ordered;}
                 while (turns.size() > 50) turns.remove(turns.keySet().iterator().next());
                 thread.put("turns", new JSONArray(turns.values())); threads.put(id, thread);
             }
@@ -117,7 +129,7 @@ final class MobileState {
     static JSONObject offline(JSONObject value) throws Exception {
         JSONObject result = new JSONObject(value.toString()); result.put("online", false);
         JSONArray threads = result.optJSONArray("threads");
-        if (threads != null) for (int i = 0; i < threads.length(); i++) threads.getJSONObject(i).put("ready", false).put("approvals", new JSONArray());
+        if (threads != null) for (int i = 0; i < threads.length(); i++) threads.getJSONObject(i).put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray());
         return result;
     }
     static JSONArray alerts(JSONObject previous, JSONObject current) throws Exception {

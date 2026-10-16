@@ -7,13 +7,14 @@ import { spawn } from 'node:child_process';
 import { ConfigStore, addresses, validateConfig } from './config.mjs';
 import { GatewayRuntime } from './runtime.mjs';
 import { EasyTierManager } from './easytier.mjs';
+import { pairingInfo } from './pairing.mjs';
 const fail = (status, message) => Object.assign(Error(message), { status });
 const safeEqual = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {} }) {
   let mutation = Promise.resolve(); const events = [];
   const record = message => { events.push({ at: new Date().toISOString(), message }); if (events.length > 50) events.shift(); };
-  const status = async () => ({ kind: 'codex-lan-manager', version: '0.3.4-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
-  const start = async () => {
+  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.13-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
+  const startConfigured = async () => {
     const saved = await store.load(); if (!saved) throw Error('请先保存连接配置');
     const config = { ...validateConfig(saved), secretCipher: saved.secretCipher };
     if (config.mode === 'bundled') {
@@ -32,6 +33,10 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
       await runtime.start(config); await easytier.stop();
     }
     record('手机连接服务已启动'); return status();
+  };
+  const start = async () => {
+    try { return await startConfigured(); }
+    catch (error) { record('连接启动失败：' + error.message); throw error; }
   };
   const server = http.createServer(async (request, response) => {
     const reply = (code, body, type = 'application/json; charset=utf-8') => {
@@ -59,7 +64,24 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
         if (url.pathname === '/api/config') { const value = await store.save(input); record('连接配置已保存，点击应用并启动后生效'); return value; }
         if (url.pathname === '/api/start') return start();
         if (url.pathname === '/api/stop') { await runtime.stop(); await easytier.stop(); record('手机连接服务已停止'); return status(); }
-        if (url.pathname === '/api/pairing') return runtime.pairing(input.rotate === true);
+        if (url.pathname === '/api/pairing') {
+          if (input.apply === true) {
+            const draft = validateConfig(input.config);
+            if (draft.mode !== input.mode) throw Error('配对方式与准备启用的连接方式不一致');
+            // Reject invalid mobile network settings before writing config or changing a live connection.
+            await pairingInfo({ address:`https://${draft.host}:${draft.port}`, fingerprint:'0'.repeat(64), code:'preflight', expiresAt:new Date(Date.now()+600000).toISOString() }, draft, input);
+            await store.save(input.config);
+            await start();
+          }
+          if (!runtime.active) throw Error('请先启动手机连接服务');
+          const active = runtime.active.config;
+          const saved = await store.load();
+          if (!saved) throw Error('请先保存连接配置');
+          if (JSON.stringify(active) !== JSON.stringify({ ...validateConfig(saved), secretCipher: saved.secretCipher })) throw Error('已保存配置尚未应用，请先应用并启动');
+          // Validate credentials and mobile address before rotating a working pairing code.
+          const info = await pairingInfo(runtime.pairing(false), active, input);
+          return { ...info, ...runtime.pairing(input.rotate === true) };
+        }
         if (url.pathname === '/api/revoke') { if (!runtime.active) throw Error('服务尚未运行'); const value = await runtime.active.gateway.revokeDevice(input.id); record('已撤销一台手机的授权'); return value; }
         if (url.pathname === '/api/easytier-stop') { if (runtime.active?.config.mode === 'bundled') await runtime.stop(); await easytier.stop(); record('受管 EasyTier 已停止'); return status(); }
         if (url.pathname === '/api/shutdown') { setTimeout(onShutdown, 100); return { stopping: true }; }

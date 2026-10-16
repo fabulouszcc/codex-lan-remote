@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import { createGateway } from '../server/gateway.mjs';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
+import { gunzipSync } from 'node:zlib';
 
 const directory = await mkdtemp(join(tmpdir(), 'codex-lan-tls-'));
 const keytool = process.env.CODEX_LAN_TEST_KEYTOOL || (process.platform === 'win32'
@@ -47,7 +48,7 @@ async function fixture(t, options = {}) {
       ca: trust ? certificate.toString() : undefined,
       headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...headers } }, response => {
       const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => {
-        try { resolve({ status: response.statusCode, data: JSON.parse(Buffer.concat(chunks)) }); } catch (error) { reject(error); }
+        try { const raw=Buffer.concat(chunks);resolve({ status: response.statusCode, data: JSON.parse(response.headers['content-encoding']==='gzip'?gunzipSync(raw):raw), encoding:response.headers['content-encoding'],wireBytes:raw.length }); } catch (error) { reject(error); }
       });
     }); req.on('error', reject); req.end(payload);
   });
@@ -57,6 +58,19 @@ async function fixture(t, options = {}) {
   };
   return { bridge, saved, gateway, request, pair };
 }
+
+test('negotiated compression and sparse snapshots retain order, repairs and session authorization',async t=>{
+  const f=await fixture(t),token=await f.pair(),headers={authorization:`Bearer ${token}`,'accept-encoding':'gzip'};
+  let rows=[{id:'one',input:'a'.repeat(10000)},{id:'two',input:'b'.repeat(10000)}];
+  f.bridge.snapshot=()=>[{id:'allowed-chat',ready:true,turns:rows}];
+  const full=await f.request('GET','/v1/state?delta=1',undefined,headers);assert.equal(full.encoding,'gzip');assert.equal(full.data.sync,'full');assert.equal(full.data.threads[0].turns.length,2);assert.ok(full.wireBytes<1000);
+  rows=[rows[1],{id:'three',input:'new'}];f.bridge.emit('changed');
+  const delta=await f.request('GET','/v1/state?delta=1&after='+full.data.version,undefined,headers);
+  assert.equal(delta.data.sync,'delta');assert.equal(delta.data.baseVersion,full.data.version);assert.deepEqual(delta.data.threads[0].turnOrder,['two','three']);assert.deepEqual(delta.data.threads[0].turns,[rows[1]]);
+  const repair=await f.request('GET','/v1/state?delta=1&after=-1',undefined,headers);assert.equal(repair.data.sync,'full');assert.equal(repair.data.threads[0].turns.length,2);
+  const plain=await f.request('GET','/v1/state',undefined,{...headers,'accept-encoding':'gzip;q=0'});assert.equal(plain.encoding,undefined);assert.equal(plain.data.threads[0].turns.length,2);
+  await f.gateway.revokeDevice(f.gateway.listDevices()[0].id);assert.equal((await f.request('GET','/v1/state?delta=1&after=-1',undefined,headers)).status,401);
+});
 
 test('TLS and pairing protect private chat state; persisted credentials contain hashes only', async t => {
   const f = await fixture(t);

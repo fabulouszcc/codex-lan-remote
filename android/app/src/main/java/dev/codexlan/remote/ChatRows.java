@@ -7,8 +7,31 @@ import java.util.List;
 
 /** Presentation data only; prepare off the UI thread, instantiate views on demand. */
 final class ChatRows {
+    static String stripAmbient(String value){
+        String text=value.trim();boolean changed=false;
+        for(int pass=0;pass<24;pass++){
+            String close=null;
+            if(text.startsWith("<in-app-browser-context source=\"ambient-ui-state\""))close="</in-app-browser-context>";
+            else if(text.startsWith("<external_codex_apps_open_page>"))close="</external_codex_apps_open_page>";
+            if(close!=null){int end=text.indexOf(close);if(end<0)break;text=text.substring(end+close.length()).trim();changed=true;continue;}
+            if(changed){String next=text.replaceFirst("^#{1,6}\\s*My request:\\s*","").trim();if(!next.equals(text)){text=next;continue;}}
+            break;
+        }
+        return changed?text:value;
+    }
+    static String userText(String value){String text=stripAmbient(value);return text.isEmpty()?"已同步页面上下文":displayText(text);}
+    static String displayText(String value){
+        String trimmed=value.trim();
+        if(!trimmed.startsWith("<send_user_message_question_reply>")||!trimmed.endsWith("</send_user_message_question_reply>"))return value;
+        try{
+            Object parsed=new org.json.JSONTokener(trimmed.substring(34,trimmed.length()-35)).nextValue();
+            JSONArray replies=parsed instanceof JSONArray?(JSONArray)parsed:new JSONArray().put(parsed);StringBuilder result=new StringBuilder();
+            for(int i=0;i<replies.length();i++){JSONObject reply=replies.getJSONObject(i);if(result.length()>0)result.append("\n\n");String question=reply.optString("question");if(!question.isEmpty())result.append(question).append("\n");result.append("已回复：").append(reply.getString("answer"));}
+            return result.toString();
+        }catch(Exception ignored){return value;}
+    }
     static String navigationText(JSONObject item){
-        String value=item.optString("text").trim();
+        String value=stripAmbient(item.optString("text")).trim();
         if(value.startsWith("<send_user_message_question_reply>"))try{
             JSONArray replies=new JSONArray(value.substring(value.indexOf('['),value.lastIndexOf(']')+1));StringBuilder answers=new StringBuilder();
             for(int i=0;i<replies.length();i++){String answer=replies.getJSONObject(i).optString("answer");if(!answer.isEmpty()){if(answers.length()>0)answers.append("；");answers.append(answer);}}
@@ -49,6 +72,8 @@ final class ChatRows {
         JSONObject activity=thread.optJSONObject("activity");
         if(thread.optBoolean("ready")&&!thread.optString("activeTurnId").isEmpty())rows.add(new Row(chat+":activity","activity",activity==null?new JSONObject().put("label","正在思考…"):activity));
         JSONArray approvals=thread.optJSONArray("approvals");
+        JSONArray questions=thread.optJSONArray("questions");
+        if(thread.optBoolean("ready")&&questions!=null)for(int i=0;i<questions.length();i++)rows.add(new Row(chat+":question:"+questions.getJSONObject(i).optString("id"),"question",questions.getJSONObject(i)));
         if(approvals!=null)for(int i=0;i<approvals.length();i++)rows.add(new Row(chat+":approval:"+approvals.getJSONObject(i).optString("id",String.valueOf(i)),"approval",approvals.getJSONObject(i)));
         return rows;
     }

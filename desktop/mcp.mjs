@@ -14,7 +14,7 @@ for await (const line of lines) {
     if (line.length > 1024 * 1024) throw Error('请求过大'); message = JSON.parse(line);
     if (message.id === undefined) continue;
     let result;
-    if (message.method === 'initialize') result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.3.4' } };
+    if (message.method === 'initialize') result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.4.6' } };
     else if (message.method === 'ping') result = {};
     else if (message.method === 'tools/list') result = { tools };
     else if (message.method === 'tools/call') {

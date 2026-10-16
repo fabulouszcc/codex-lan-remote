@@ -17,10 +17,10 @@ export function addresses() {
   return Object.entries(networkInterfaces()).flatMap(([name, rows]) => rows.filter(row => row.family === 'IPv4' && !row.internal && !row.address.startsWith('169.254.')).map(row => ({ name, address: row.address, cidr: row.cidr })));
 }
 export function validateConfig(value) {
-  if (!value || !['existing', 'bundled'].includes(value.mode)) throw Error('请选择已有网络或内置 EasyTier');
+  if (!value || !['existing', 'external', 'bundled'].includes(value.mode)) throw Error('请选择局域网或 EasyTier 连接');
   const host = String(value.host || '').trim();
   if (isIP(host) !== 4 || host === '0.0.0.0' || host.startsWith('127.') || host.startsWith('169.254.')) throw Error('请输入本机可达的局域网或虚拟 IPv4 地址');
-  if (value.mode === 'existing' && !addresses().some(row => row.address === host)) throw Error('该 IP 不属于本机网卡，请填写电脑的本机地址');
+  if (value.mode !== 'bundled' && !addresses().some(row => row.address === host)) throw Error('该 IP 不属于本机网卡，请填写电脑的本机地址');
   const port = Number(value.port);
   const lanHost=String(value.lanHost || '').trim();
   if(lanHost && (!/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(lanHost) || !addresses().some(row=>row.address===lanHost))) throw Error('局域网直连地址必须是本机的私有 IPv4 网卡地址');
@@ -42,6 +42,7 @@ export function validateEasyTier(config) {
   const et = config.easytier;
   const match = /^(\d+\.\d+\.\d+\.\d+)\/(\d+)$/.exec(et.cidr);
   if (!et.name || et.name.length > 128) throw Error('请填写组网名称，最多 128 字符');
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(et.cidr)) throw Error('电脑虚拟 IP 缺少子网前缀，请填写 IPv4/前缀，例如 192.168.101.1/24');
   if (!match || isIP(match[1]) !== 4 || +match[2] < 8 || +match[2] > 30 || match[1] !== config.host) throw Error('内置组网需要静态虚拟 IPv4/前缀，且 IP 应与远控地址一致');
   const ip = ipv4(match[1]), mask = (0xffffffff << (32 - +match[2])) >>> 0;
   if ((ip & mask) >>> 0 === ip || ((ip | mask) >>> 0) === 0xffffffff || ip >>> 24 === 0 || ip >>> 24 === 127 || ip >>> 24 >= 224) throw Error('虚拟 IP 必须是可分配的主机地址');
@@ -87,13 +88,24 @@ export function dpapi(value, decrypt = false) {
 export class ConfigStore {
   constructor(root) { this.root = root; this.path = join(root, 'config.local.json'); }
   async load() { return readJson(this.path, null); }
-  async public() { const value = await this.load(); if (!value) return null; const { secretCipher, ...config } = value; return { ...config, hasSecret: !!secretCipher }; }
+  async public() { const value = await this.load(); if (!value) return null; const { secretCipher, ...config } = value; return { ...config, profiles: networkProfiles(value), hasSecret: !!secretCipher }; }
   async save(input) {
-    const next = validateConfig(input), prior = await this.load();
-    next.profiles = { ...(prior?.profiles || {}), [next.mode]: { host: next.host, port: next.port } };
-    const supplied = input.networkSecret;
+    const prior = await this.load();
+    // LAN/external edits cannot overwrite the separately owned bundled ET profile.
+    const next = validateConfig({ ...input, easytier: input.mode === 'bundled' ? input.easytier : prior?.easytier, lanHost: '' });
+    next.profiles = { ...networkProfiles(prior), [next.mode]: { host: next.host, port: next.port } };
+    const supplied = next.mode === 'bundled' ? input.networkSecret : undefined;
     if (supplied !== undefined && (typeof supplied !== 'string' || supplied.length > 512)) throw Error('组网密钥最多 512 字符');
-    next.secretCipher = input.clearSecret ? undefined : supplied ? await dpapi(supplied) : prior?.secretCipher;
+    next.secretCipher = next.mode === 'bundled' && input.clearSecret ? undefined : supplied ? await dpapi(supplied) : prior?.secretCipher;
     await atomicJson(this.path, next); return this.public();
   }
+}
+export function networkProfiles(value) {
+  const profiles = {};
+  for (const mode of ['existing', 'external', 'bundled']) {
+    const row = value?.profiles?.[mode];
+    if (row && typeof row.host === 'string' && Number.isInteger(row.port)) profiles[mode] = { host: row.host, port: row.port };
+  }
+  if (value?.host && ['existing','external','bundled'].includes(value.mode)) profiles[value.mode] = { host:value.host, port:value.port };
+  return profiles;
 }

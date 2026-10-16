@@ -12,7 +12,7 @@ export class EasyTierManager {
   constructor(binDir, { dataDir = binDir, spawnChild = spawn, runCommand = run, checkSubnet = assertNoSubnetConflict, decrypt = value => dpapi(value, true), checkPort = availablePort } = {}) {
     Object.assign(this, { binDir, dataDir, spawnChild, runCommand, checkSubnet, decrypt, checkPort }); this.child = null; this.state = '未启动';
   }
-  status() { return { owned: !!this.child, pid: this.child?.pid, state: this.state, version: '2.6.4', rpcLoopbackOnly: true }; }
+  status() { return { owned: !!this.child, pid: this.child?.pid, state: this.state, version: '2.6.4', rpcLoopbackOnly: true, lastExit:this.lastExit || null }; }
   async start(config) {
     const signature = JSON.stringify({ easytier: config.easytier, secretCipher: config.secretCipher });
     if (this.child) {
@@ -34,9 +34,9 @@ export class EasyTierManager {
       '--ipv4', et.cidr, '--dev-name', et.devName, '--listeners', `tcp://0.0.0.0:${et.listenPort}`,
       '--rpc-portal', `127.0.0.1:${et.rpcPort}`, '--peers', ...et.peers, '--console-log-level', 'error', '--file-log-level', 'off'],
       { windowsHide: true, cwd: this.dataDir, env: { ...env, ET_NETWORK_SECRET: secret }, stdio: 'ignore' });
-    this.child = child; this.signature = signature; this.state = '启动中'; this.rpcPort = et.rpcPort;
+    this.child = child; this.signature = signature; this.state = '启动中'; this.rpcPort = et.rpcPort; this.lastExit = null;
     child.on('error', () => { if (this.child === child) { this.child = null; this.state = '启动失败，请检查管理员权限和原生库'; } });
-    child.on('exit', () => { if (this.child === child) { this.child = null; this.state = '已退出，请检查权限或配置'; } });
+    child.on('exit', (code, signal) => { if (this.child === child) { this.child = null; this.lastExit = {code:Number.isInteger(code)?code:null,signal:typeof signal==='string'?signal:null}; this.state = '已退出，请检查权限或配置'; } });
     return this.status();
   }
   async node() {

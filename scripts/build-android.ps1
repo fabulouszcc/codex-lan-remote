@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SdkPath,
     [string]$JavaPath,
     [string]$GradlePath
@@ -46,10 +46,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Android 构建失败' }
 $taskJsonJar = Get-ChildItem (Join-Path $env:GRADLE_USER_HOME 'caches\modules-2\files-2.1\com.vaadin.external.google\android-json\0.0.20131108.vaadin1') -Recurse -Filter '*.jar' | Select-Object -First 1
 $taskJunitJar = Get-ChildItem (Join-Path $env:GRADLE_USER_HOME 'caches\modules-2\files-2.1\junit\junit\4.13.2') -Recurse -Filter '*.jar' | Select-Object -First 1
 $taskHamcrestJar = Get-ChildItem (Join-Path $env:GRADLE_USER_HOME 'caches\modules-2\files-2.1\org.hamcrest\hamcrest-core\1.3') -Recurse -Filter '*.jar' | Select-Object -First 1
-$taskClasspath = @((Join-Path $taskAndroidBuild 'intermediates\javac\debug\compileDebugJavaWithJavac\classes'), (Join-Path $taskAndroidBuild 'intermediates\javac\debugUnitTest\compileDebugUnitTestJavaWithJavac\classes'), $taskJsonJar.FullName, $taskJunitJar.FullName, $taskHamcrestJar.FullName) -join ';'
+$taskQrJar = Get-ChildItem (Join-Path $env:GRADLE_USER_HOME 'caches\modules-2\files-2.1\com.google.zxing\core\3.5.4') -Recurse -Filter '*.jar' | Select-Object -First 1
+$taskClasspath = @((Join-Path $taskAndroidBuild 'intermediates\javac\debug\compileDebugJavaWithJavac\classes'), (Join-Path $taskAndroidBuild 'intermediates\javac\debugUnitTest\compileDebugUnitTestJavaWithJavac\classes'), $taskJsonJar.FullName, $taskJunitJar.FullName, $taskHamcrestJar.FullName, $taskQrJar.FullName) -join ';'
 & (Join-Path $JavaPath 'bin\java.exe') -cp $taskClasspath org.junit.runner.JUnitCore dev.codexlan.remote.MobileStateTest
 if ($LASTEXITCODE -ne 0) { throw 'Android 状态逻辑测试失败' }
 $taskOutput = Join-Path $taskRoot '.local\releases'
 New-Item -ItemType Directory -Force -Path $taskOutput | Out-Null
-Copy-Item -LiteralPath (Join-Path $taskAndroidBuild 'outputs\apk\debug\app-debug.apk') -Destination (Join-Path $taskOutput 'codex-lan-0.3.4-preview.apk') -Force
-Write-Output (Join-Path $taskOutput 'codex-lan-0.3.4-preview.apk')
+Copy-Item -LiteralPath (Join-Path $taskAndroidBuild 'outputs\apk\debug\app-debug.apk') -Destination (Join-Path $taskOutput 'codex-lan-0.4.13-preview.apk') -Force
+Write-Output (Join-Path $taskOutput 'codex-lan-0.4.13-preview.apk')

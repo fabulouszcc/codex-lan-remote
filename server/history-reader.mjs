@@ -57,9 +57,11 @@ export class HistoryReader {
     for(let page=0;page<5;page++){
       const value=await this.request('model/list',{limit:100,includeHidden:false,...cursor?{cursor}:{}});
       result.push(...(value.data||[]).filter(model=>!model.hidden).map(model=>({
-        model:model.model,displayName:model.displayName||model.model,
+        model:model.model,displayName:model.displayName||model.model,description:model.description||'',
         defaultEffort:model.defaultReasoningEffort,
         efforts:(model.supportedReasoningEfforts||[]).map(option=>option.reasoningEffort),
+        effortOptions:(model.supportedReasoningEfforts||[]).map(option=>({effort:option.reasoningEffort,description:option.description||''})),
+        serviceTiers:(model.serviceTiers||[]).map(tier=>({id:tier.id,name:tier.name,description:tier.description||''})),
       })));
       cursor=value.nextCursor;if(!cursor)break;
     }

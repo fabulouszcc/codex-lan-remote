@@ -9,6 +9,48 @@ import { createManager } from '../desktop/manager.mjs';
 import { ConfigStore, validateConfig, assertNoSubnetConflict, dpapi, addresses } from '../desktop/config.mjs';
 import { EasyTierManager } from '../desktop/easytier.mjs';
 const assets = new URL('../desktop/web/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+
+test('automatic start failures remain visible in bounded manager events', async t => {
+  const host=addresses()[0]?.address;if(!host)return;
+  const root=await mkdtemp(join(tmpdir(),'codex-lan-start-error-')),saved={mode:'existing',host,port:9443,allowSelectedChats:true};
+  const runtime={status:()=>({running:false}),stop:async()=>{},start:async()=>{throw Error('fixture startup failure');}};
+  const easytier={status:()=>({owned:false}),stop:async()=>{}};
+  const manager=await createManager({root,assets:decodeURIComponent(assets),port:0,runtime,easytier,store:{load:async()=>saved,public:async()=>saved}});t.after(()=>manager.close());
+  await assert.rejects(manager.start(),/fixture startup failure/);assert.equal((await manager.status()).events.at(-1).message,'连接启动失败：fixture startup failure');
+});
+
+test('generate-and-apply validates mobile CIDR before changing LAN, then starts bundled ET and returns its QR', async t => {
+  const host=addresses().find(row=>!row.address.endsWith('.0')&&!row.address.endsWith('.255'))?.address;if(!host)return;
+  const root=await mkdtemp(join(tmpdir(),'codex-lan-pair-apply-')),store=new ConfigStore(root);
+  await store.save({mode:'existing',host,port:9443,allowSelectedChats:true});let starts=0,rotations=0;
+  const runtime={active:{config:{...validateConfig(await store.load()),secretCipher:undefined}},status:()=>({running:true}),stop:async()=>{},start:async config=>{starts++;runtime.active={config};},pairing:rotate=>{if(rotate)rotations++;return{address:`https://${runtime.active.config.host}:9443`,fingerprint:'a'.repeat(64),code:`test_${rotations}`,expiresAt:'2100-01-01T00:00:00Z'};}};
+  const easytier={child:null,status:()=>({owned:false}),start:async()=>{easytier.child={};},stop:async()=>{easytier.child=null;}};
+  const manager=await createManager({root,assets:decodeURIComponent(assets),port:0,runtime,easytier,store});t.after(()=>manager.close());
+  const input={mode:'bundled',apply:true,rotate:true,phoneCidr:'invalid',config:{mode:'bundled',host,port:9443,allowSelectedChats:true,easytier:{name:'fixture',cidr:host+'/24',peers:['tcp://example.invalid:11010'],listenPort:11011,rpcPort:15899}}};
+  const request=()=>fetch(new URL('/api/pairing',manager.url),{method:'POST',headers:{authorization:'Bearer '+manager.token,'content-type':'application/json'},body:JSON.stringify(input)});
+  assert.equal((await request()).status,400);assert.equal(starts,0);assert.equal((await store.load()).mode,'existing');assert.equal(rotations,0);
+  input.phoneCidr=host.split('.').slice(0,3).join('.')+(host.endsWith('.2')?'.3/24':'.2/24');
+  const response=await request();assert.equal(response.status,200);const info=await response.json();assert.equal(info.networkMode,'easytier');assert.equal(info.easytier.cidr,input.phoneCidr);assert.equal(starts,1);assert.equal(rotations,1);
+  delete input.phoneCidr;input.apply=false;delete input.config;
+  const dhcp=await request();assert.equal(dhcp.status,200);assert.equal((await dhcp.json()).easytier.dhcp,true);assert.equal(starts,1);
+});
+
+test('pairing API follows the applied mode and rejects stale settings before rotating', async t => {
+  const host=addresses().find(row=>!/easytier|^et_|tun|tap|vpn|wireguard|vmnet/i.test(row.name))?.address;if(!host)return;
+  let saved={mode:'existing',host,port:9443,allowSelectedChats:true},rotations=0;
+  const runtime={active:{config:{...validateConfig(saved),secretCipher:undefined}},status:()=>({running:true}),stop:async()=>{},pairing:rotate=>{
+    if(rotate)rotations++;return{address:`https://${host}:9443`,fingerprint:'a'.repeat(64),code:`test_${rotations}`,expiresAt:'2100-01-01T00:00:00Z'};
+  }};
+  const store={load:async()=>saved,public:async()=>saved};
+  const easytier={status:()=>({owned:false}),stop:async()=>{}};
+  const root=await mkdtemp(join(tmpdir(),'codex-lan-pair-'));
+  const manager=await createManager({root,assets:decodeURIComponent(assets),port:0,runtime,easytier,store});t.after(()=>manager.close());
+  const request=body=>fetch(new URL('/api/pairing',manager.url),{method:'POST',headers:{authorization:'Bearer '+manager.token,'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await request({mode:'bundled',rotate:true})).status,400);assert.equal(rotations,0);
+  const response=await request({mode:'existing',rotate:true});assert.equal(response.status,200);
+  const info=await response.json();assert.equal(info.networkMode,'lan');assert.equal(info.code,'test_1');assert.equal(info.easytier,undefined);
+  saved={...saved,port:9444};assert.equal((await request({mode:'existing',rotate:true})).status,400);assert.equal(rotations,1);
+});
 test('local admin rejects missing token, hostile origin, rebinding and oversized mutation', async t => {
   const root = await mkdtemp(join(tmpdir(), 'codex-lan-manager-'));
   const runtime = { status: () => ({ running: false }), stop: async () => {} };
@@ -61,6 +103,21 @@ test('Windows DPAPI keeps Unicode secret out of config and public state', { skip
   const secret = '测试密钥-DPAPI-🦊'; const cipher = await dpapi(secret);
   assert.ok(!cipher.includes(secret)); assert.equal(await dpapi(cipher, true), secret);
   const host = addresses()[0].address, root = await mkdtemp(join(tmpdir(), 'codex-lan-secret-')), store = new ConfigStore(root);
-  await store.save({ mode: 'existing', host, port: 9443, allowSelectedChats: true, networkSecret: secret });
+  await store.save({ mode: 'bundled', host:'10.90.0.1', port: 9443, allowSelectedChats: true, networkSecret: secret, easytier:{name:'test',cidr:'10.90.0.1/24',peers:['tcp://example.invalid:11010'],listenPort:11011,rpcPort:15899} });
   assert.ok(!(await readFile(store.path, 'utf8')).includes(secret)); assert.equal((await store.public()).secretCipher, undefined); assert.equal((await store.public()).hasSecret, true);
+});
+
+test('LAN and external profiles preserve bundled parameters and encrypted secret across saves', async () => {
+  const host=addresses()[0]?.address;if(!host)return;
+  const root=await mkdtemp(join(tmpdir(),'codex-lan-separated-')),store=new ConfigStore(root);
+  const et={name:'saved-network',cidr:'10.90.0.1/24',peers:['tcp://example.invalid:11010'],listenPort:11011,rpcPort:15899,devName:'codex-lan-et'};
+  const legacy={mode:'bundled',host:'10.90.0.1',port:9443,allowSelectedChats:true,easytier:et,secretCipher:'opaque-test-cipher',profiles:{existing:{host,port:9445,secretCipher:'must-be-dropped'}}};
+  await writeFile(store.path,JSON.stringify(legacy));const before=await readFile(store.path,'utf8');
+  const migrated=await store.public();assert.equal(migrated.profiles.bundled.host,'10.90.0.1');assert.equal(migrated.profiles.existing.secretCipher,undefined);assert.equal(await readFile(store.path,'utf8'),before);
+  await store.save({mode:'existing',host,port:9446,allowSelectedChats:true,networkSecret:'ignored',clearSecret:true,easytier:{name:'must-not-overwrite'}});
+  let value=await store.load();assert.deepEqual(value.easytier,et);assert.equal(value.secretCipher,'opaque-test-cipher');assert.equal(value.profiles.bundled.port,9443);assert.equal(value.profiles.existing.port,9446);
+  await store.save({mode:'external',host,port:9447,allowSelectedChats:true});value=await store.load();
+  assert.equal(value.profiles.existing.port,9446);assert.equal(value.profiles.external.port,9447);assert.deepEqual(value.easytier,et);assert.equal(value.secretCipher,'opaque-test-cipher');
+  await store.save({mode:'bundled',host:'10.90.0.1',port:9448,allowSelectedChats:true,easytier:et,networkSecret:''});value=await store.load();
+  assert.equal(value.profiles.existing.port,9446);assert.equal(value.profiles.external.port,9447);assert.equal(value.profiles.bundled.port,9448);assert.equal(value.secretCipher,'opaque-test-cipher');assert.equal((await store.public()).secretCipher,undefined);
 });

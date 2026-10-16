@@ -1,0 +1,3 @@
+ZXing Core 3.5.4 — Apache License 2.0
+Source: https://github.com/zxing/zxing/tree/zxing-3.5.4
+Used for offline QR decoding. No image upload.

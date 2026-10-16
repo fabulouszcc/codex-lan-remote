@@ -17,6 +17,34 @@ class Client extends EventEmitter {
   async loadHistory(id) { this.historyRequests.push(id); }
 }
 const stored = [{ id: 'saved-turn', status: 'completed', input: 'old question', agentMessages: ['old answer'], toolResults: [] }];
+test('late hydration with a different history window retains canonical live order before trimming',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  const turns=Array.from({length:51},(_,i)=>({turnId:'turn-'+i,status:'completed',items:[{type:'userMessage',id:'u'+i,content:[{type:'text',text:'message-'+i}]}]}));
+  bridge.entries.get('active').history=turns.slice(1).map(t=>({id:t.turnId,input:'persisted',timeline:[]}));
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:{turns,requests:[]}}});
+  const rows=bridge.snapshot()[0].turns;
+  assert.deepEqual(rows.map(r=>r.id),turns.slice(1).map(r=>r.turnId));assert.equal(rows.at(-1).input,'message-50');
+});
+test('questions route native responses and async replies to the live owner, rejecting stale and repeated answers',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  const state={turns:[{turnId:'turn',status:'inProgress',items:[{type:'agentMessage',id:'call',questions:[{title:'Choose?',options:['One','Two']}]}]}],requests:[{id:8,method:'tool/requestUserInput',params:{turnId:'turn',questions:[{id:'native',question:'Native?',options:[{label:'Yes',description:'Confirm'}]}]}}]};
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:state}});
+  const pending=bridge.snapshot()[0].questions;assert.equal(pending.length,2);
+  let native,asyncReply;client.replyUserInput=async(...args)=>{native=args;};client.steerTurn=async(...args)=>{asyncReply=args;};
+  const answer={op:'answer',requestId:8,turnId:'turn',answers:{native:{answers:['Yes']}}};
+  await assert.rejects(bridge.command('active',{...answer,turnId:'old'}),/已处理|变化/);
+  await assert.rejects(bridge.command('active',{...answer,answers:{native:{answers:['arbitrary']}}}),/可选项/);
+  await bridge.command('active',answer);assert.deepEqual(native,['active',8,{native:{answers:['Yes']}},'owner']);
+  await assert.rejects(bridge.command('active',answer),/已提交/);
+  const id=pending.find(q=>q.kind==='async').questions[0].id;
+  await bridge.command('active',{op:'answer',requestId:'call',turnId:'turn',answers:{[id]:{answers:['Custom text']}}});
+  const text=asyncReply[1];assert.ok(text.startsWith('<send_user_message_question_reply>'));
+  const replies=JSON.parse(text.slice(34,-35));assert.deepEqual(replies,[{questionItemId:id,question:'Choose?',answer:'Custom text'}]);
+  state.turns[0].items.push({type:'steeringUserMessage',status:'accepted',input:[{type:'text',text}]});
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:state}});
+  assert.equal(bridge.snapshot()[0].questions.filter(q=>q.kind==='async').length,0);
+  client.emit('disconnected');assert.deepEqual(bridge.snapshot()[0].questions,[]);
+});
 test('model selection validates the real catalog, rejects read-only chats, and requires confirmed settings',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
   let settings={model:'one',reasoningEffort:'low'},calls=0;
@@ -26,6 +54,15 @@ test('model selection validates the real catalog, rejects read-only chats, and r
   await assert.rejects(bridge.command('active',{op:'model',model:'two',effort:'ultra'}),/可用列表/);assert.equal(calls,0);
   await bridge.command('active',{op:'model',model:'two',effort:'high'});assert.equal(bridge.snapshot()[0].model,'two');
   bridge.entries.get('active').writable=false;await assert.rejects(bridge.command('active',{op:'model',model:'one',effort:'low'}),/只|读取/);assert.equal(calls,1);
+});
+test('speed must exist in the model catalog and be confirmed by live thread state',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  bridge.historyReader.models=async()=>[{model:'one',efforts:['high'],serviceTiers:[{id:'priority'}]}];
+  client.readModelSettings=async()=>({model:'one',reasoningEffort:'high'});
+  client.updateModelSettings=async(id,model,effort,{serviceTier})=>{client.emit('threadState',{conversationId:id,change:{type:'snapshot',revision:2,conversationState:{turns:[],requests:[],latestThreadSettings:{serviceTier}}}});return {applied:true};};
+  await assert.rejects(bridge.command('active',{op:'model',model:'one',effort:'high',serviceTier:'invented'}),/速度/);
+  await bridge.command('active',{op:'model',model:'one',effort:'high',serviceTier:'priority'});
+  assert.equal(bridge.snapshot()[0].serviceTier,'priority');assert.equal((await bridge.modelOptions('active')).current.serviceTier,'priority');
 });
 function fixture(threads, options = {}) {
   const client = new Client();

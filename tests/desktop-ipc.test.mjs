@@ -144,6 +144,12 @@ test('model changes use the installed settings protocol and forward only model a
   const sent=messages.find(message=>message.method==='thread-follower-update-thread-settings');
   assert.equal(sent.version,2);assert.deepEqual(sent.params.threadSettings,{model:'available-model',effort:'high'});assert.equal(sent.targetClientId,'desktop-owner');
 });
+test('speed selection forwards only the supported service tier and rejects arbitrary settings',async t=>{
+  const {client,messages}=await fixture(t,(request,send)=>{if(request.method==='thread-follower-update-thread-settings')respond(request,send,{applied:true});},{controlThreadIds:['allowed-thread']});
+  await client.updateModelSettings('allowed-thread','available-model','ultra',{ownerId:'desktop-owner',serviceTier:'priority',permissions:'unsafe'});
+  assert.deepEqual(messages.find(m=>m.method==='thread-follower-update-thread-settings').params.threadSettings,{model:'available-model',effort:'ultra',serviceTier:'priority'});
+  assert.throws(()=>client.updateModelSettings('allowed-thread','available-model','ultra',{serviceTier:'invented'}),/Invalid service tier/);
+});
 
 test('explicit control remains bound to the allowlisted thread and actual owner', async t => {
   const { client, messages } = await fixture(t, (request, send) => {
@@ -155,4 +161,14 @@ test('explicit control remains bound to the allowlisted thread and actual owner'
   assert.equal(sent.params.conversationId, 'allowed-thread');
   assert.equal(sent.params.turnStart.request.threadId, 'allowed-thread');
   assert.equal(sent.targetClientId, 'desktop-owner');
+});
+
+test('user input uses the installed v1 response envelope and an explicitly authorized owner', async t => {
+  const {client,messages}=await fixture(t,(request,send)=>{if(request.method==='thread-follower-submit-user-input')respond(request,send,{ok:true});},{controlThreadIds:['allowed-thread']});
+  const answers={choice:{answers:['A']}};
+  assert.equal((await client.replyUserInput('allowed-thread',7,answers,'desktop-owner')).ok,true);
+  const sent=messages.find(m=>m.method==='thread-follower-submit-user-input');
+  assert.equal(sent.version,1);assert.equal(sent.targetClientId,'desktop-owner');
+  assert.deepEqual(sent.params,{conversationId:'allowed-thread',requestId:7,response:{answers}});
+  await assert.rejects(client.replyUserInput('other-thread',7,answers,'desktop-owner'),/not enabled/);
 });

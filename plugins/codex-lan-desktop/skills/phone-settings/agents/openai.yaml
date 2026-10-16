@@ -1,0 +1,4 @@
+interface:
+  display_name: "打开手机连接设置"
+  short_description: "在 Codex 右侧打开手机连接设置，管理网络、配对与设备授权"
+  default_prompt: "使用 $phone-settings 在当前 Codex 聊天右侧打开手机连接设置。"

@@ -70,7 +70,7 @@ export class GatewayRuntime {
   }
   status() {
     const active = this.active;
-    return { running: !!active, address: active ? `https://${active.config.host}:${active.config.port}` : null,
+    return { running: !!active, mode: active?.config.mode || null, address: active ? `https://${active.config.host}:${active.config.port}` : null,
       lanAddress: active?.config.lanHost ? `https://${active.config.lanHost}:${active.config.port}` : null,
       fingerprint: this.identity?.fingerprint, deviceId: this.identity?.deviceId,
       chats: active?.bridge.snapshot().map(row => ({ id: row.id, name: row.name, ready: row.ready, writable: row.writable })) || [],

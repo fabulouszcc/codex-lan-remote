@@ -9,6 +9,9 @@ const manifest = JSON.parse(await readFile(join(plugin, '.codex-plugin', 'plugin
 const hashes = JSON.parse((await readFile(join(plugin, 'dependency-hashes.json'), 'utf8')).replace(/^\uFEFF/, ''));
 const report = { checkedAt: new Date().toISOString(), scope: 'installed local plugin, MCP stdio, loopback settings and bundled versions; no model task', checks: {} };
 report.checks.manifest = manifest.name === 'codex-lan-desktop';
+report.checks.settingsQuickAction = manifest.interface?.defaultPrompt?.some(prompt=>prompt.includes('打开手机连接设置')) === true;
+report.checks.settingsSetupEntry = manifest.extensions?.['com.openai']?.onboardingSkill === './skills/phone-settings/SKILL.md';
+report.checks.packagedSettingsSkill = (await readFile(join(plugin,'skills/phone-settings/SKILL.md'),'utf8')).includes('open_phone_settings');
 for (const [name, expected] of Object.entries(hashes)) {
   const path = join(plugin, name === 'node.exe' ? 'runtime' : 'vendor/easytier', name);
   report.checks['hash:' + name] = createHash('sha256').update(await readFile(path)).digest('hex') === expected;

@@ -4,6 +4,153 @@ import org.json.*;
 import static org.junit.Assert.*;
 
 public class MobileStateTest {
+    @Test public void dhcpQrWaitsForNativeAssignmentAndNeverUsesDesktopIpAsPhoneIp() throws Exception {
+        JSONObject et=new JSONObject().put("name","fixture").put("secret","").put("dhcp",true).put("networkCidr","10.90.0.1/24").put("peers","tcp://public.easytier.cn:11010");
+        JSONObject payload=new JSONObject().put("address","https://10.90.0.1:9443").put("fingerprint","a".repeat(64)).put("code","test").put("networkMode","easytier").put("easytier",et);
+        PairingInfo info=PairingInfo.parse(payload.toString(),0);assertTrue(info.easytier.getBoolean("dhcp"));assertFalse(info.easytier.has("cidr"));
+        EasyTierProfile profile=new EasyTierProfile("fixture","","10.90.0.1/24","tcp://public.easytier.cn:11010",true);
+        assertTrue(profile.toml().contains("dhcp = true"));assertFalse(profile.toml().contains("\nipv4 ="));
+        JSONObject ip=new JSONObject().put("address",new JSONObject().put("addr",173670402L)).put("network_length",24);
+        assertEquals("10.90.0.2",profile.assigned(ip).address);ip.getJSONObject("address").put("addr",173670403L);assertEquals("10.90.0.3",profile.assigned(ip).address);
+        ip.getJSONObject("address").put("addr",173735938L);try{profile.assigned(ip);fail("unexpected subnet");}catch(Exception expected){}
+        et.put("cidr","10.90.0.2/24");try{PairingInfo.parse(payload.toString(),0);fail("ambiguous address mode");}catch(Exception expected){}
+        et.remove("cidr");et.put("dhcp","true");try{PairingInfo.parse(payload.toString(),0);fail("non-boolean DHCP");}catch(Exception expected){}
+    }
+    @Test public void pairingWaitsForThePeerThenSubmitsOnce() throws Exception {
+        long[] now={0};int[] calls={0,0};
+        JSONObject result=PairingHandshake.run((method,path,body)->{if(method.equals("GET")){if(calls[0]++<2)throw new java.net.ConnectException();return new JSONObject().put("protocol",1).put("pairingOpen",true);}calls[1]++;return new JSONObject().put("token","fixture");},new JSONObject(),()->now[0],ms->now[0]+=ms,()->{});
+        assertEquals("fixture",result.getString("token"));assertEquals(3,calls[0]);assertEquals(1,calls[1]);
+    }
+    @Test public void pairingNeverReplaysPostOrRetriesBadCertificates() throws Exception {
+        int[] posts={0};
+        try{PairingHandshake.run((m,p,b)->{if(m.equals("GET"))return new JSONObject().put("protocol",1).put("pairingOpen",true);posts[0]++;throw new java.net.SocketException();},new JSONObject(),()->0,ms->{},()->{});fail("unconfirmed POST");}catch(Exception expected){assertTrue(expected.getMessage().contains("不会自动重复"));}assertEquals(1,posts[0]);
+        int[] attempts={0};try{PairingHandshake.run((m,p,b)->{attempts[0]++;throw new javax.net.ssl.SSLHandshakeException("fixture");},new JSONObject(),()->0,ms->{},()->{});fail("bad certificate");}catch(Exception expected){assertTrue(expected.getMessage().contains("证书"));}assertEquals(1,attempts[0]);
+    }
+    @Test public void pairingNetworkWaitIsBoundedAndSavedQrRetainsExpiry() throws Exception {
+        long[] now={0};try{PairingHandshake.run((m,p,b)->{throw new java.net.ConnectException();},new JSONObject(),()->now[0],ms->now[0]+=ms,()->{});fail("unbounded wait");}catch(Exception expected){assertTrue(expected.getMessage().contains("暂时无法连接电脑"));}assertTrue(now[0]>=30000&&now[0]<32000);
+        JSONObject payload=new JSONObject().put("address","https://192.0.2.1:9443").put("fingerprint","a".repeat(64)).put("code","test").put("expiresAt",2000);
+        PairingInfo info=PairingInfo.parse(payload.toString(),1000);assertEquals(2000,info.json().getLong("expiresAt"));try{PairingInfo.parse(info.json().toString(),3000);fail("expired resume");}catch(Exception expected){assertTrue(expected.getMessage().contains("过期"));}
+    }
+    @Test public void easyTierPairingValidatesAndWhitelistsNetworkParameters() throws Exception {
+        JSONObject et=new JSONObject().put("name","测试组网").put("secret","测试密钥").put("cidr","10.90.0.2/24").put("peers","tcp://public.easytier.cn:11010").put("ignored","not imported");
+        JSONObject payload=new JSONObject().put("address","https://10.90.0.1:9443").put("fingerprint","a".repeat(64)).put("code","test_only").put("networkMode","easytier").put("easytier",et);
+        PairingInfo info=PairingInfo.parse(payload.toString(),0);assertEquals("easytier",info.networkMode);assertEquals("测试密钥",info.easytier.getString("secret"));assertFalse(info.easytier.has("ignored"));
+        et.put("cidr","10.90.0.1/24");try{PairingInfo.parse(payload.toString(),0);fail("duplicate desktop IP");}catch(Exception expected){}
+        et.put("cidr","10.91.0.2/24");try{PairingInfo.parse(payload.toString(),0);fail("outside subnet");}catch(Exception expected){}
+        et.put("cidr","10.90.0.2/24");et.put("peers","tcp://10.90.0.1:11010");try{PairingInfo.parse(payload.toString(),0);fail("recursive peer");}catch(Exception expected){}
+        payload.remove("easytier");try{PairingInfo.parse(payload.toString(),0);fail("missing ET profile");}catch(Exception expected){}
+        payload.put("networkMode","lan");assertNull(PairingInfo.parse(payload.toString(),0).easytier);
+        payload.put("easytier",et);try{PairingInfo.parse(payload.toString(),0);fail("LAN must not import credentials");}catch(Exception expected){}
+    }
+    @Test public void ambientWrappersAreHiddenOnlyAtTheStartOfUserMessages() throws Exception {
+        String block="<in-app-browser-context source=\"ambient-ui-state\">\nCurrent URL: http://localhost/\n</in-app-browser-context>\n\n## My request:\n";
+        assertEquals("初次打开的连接界面也统一一下ui弄好看点",ChatRows.userText(block+block+"初次打开的连接界面也统一一下ui弄好看点"));
+        assertEquals("保持这段代码：\n"+block,ChatRows.userText("保持这段代码：\n"+block));
+        assertEquals("```xml\n"+block+"```",ChatRows.userText("```xml\n"+block+"```"));
+        assertEquals("问题",ChatRows.userText("<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>\n## My request:\n问题"));
+        assertEquals("问题",ChatRows.navigationText(new JSONObject().put("text",block+block+"问题")));
+    }
+    @Test public void pairingPayloadValidatesIdentityExpiryAndRejectsNonPairingQr() throws Exception {
+        String pin="a".repeat(64);JSONObject payload=new JSONObject().put("address","192.0.2.10:9443").put("fingerprint",pin).put("code","test_pairing_123").put("expiresAt","2100-01-01T00:00:00Z");
+        assertEquals("https://192.0.2.10:9443",PairingInfo.parse(payload.toString(),1000).address);
+        assertEquals(pin,PairingInfo.parse(payload.toString(),1000).fingerprint);
+        payload.put("expiresAt",999);try{PairingInfo.parse(payload.toString(),1000);fail("expired accepted");}catch(Exception expected){assertTrue(expected.getMessage().contains("过期"));}
+        payload.remove("expiresAt");payload.put("address","http://192.0.2.10:9443");try{PairingInfo.parse(payload.toString(),1000);fail("insecure address accepted");}catch(Exception expected){}
+        payload.put("address","https://user:secret@example.invalid:9443");try{PairingInfo.parse(payload.toString(),1000);fail("userinfo accepted");}catch(Exception expected){}
+        try{PairingInfo.parse("https://example.invalid",1000);fail("generic QR accepted");}catch(Exception expected){}
+        try{PairingInfo.parse("{}",1000);fail("missing fields accepted");}catch(Exception expected){}
+        try{PairingInfo.parse("x".repeat(17000),1000);fail("oversized payload accepted");}catch(Exception expected){}
+    }
+    @Test public void localQrDecoderReadsDesktopJsonRotatedAndInverted() throws Exception {
+        String text=new JSONObject().put("address","https://192.0.2.10:9443").put("fingerprint","b".repeat(64)).put("code","test_only").toString();int size=480;
+        com.google.zxing.common.BitMatrix bits=new com.google.zxing.qrcode.QRCodeWriter().encode(text,com.google.zxing.BarcodeFormat.QR_CODE,size,size);
+        byte[] gray=new byte[size*size],rotated=new byte[size*size],inverted=new byte[size*size];for(int y=0;y<size;y++)for(int x=0;x<size;x++){byte pixel=(byte)(bits.get(x,y)?0:255);gray[y*size+x]=pixel;inverted[y*size+x]=(byte)(255-(pixel&255));rotated[x*size+(size-1-y)]=pixel;}
+        assertEquals(text,PairingQr.grayscale(gray,size,size));assertEquals(text,PairingQr.grayscale(rotated,size,size));assertEquals(text,PairingQr.grayscale(inverted,size,size));
+        assertEquals("test_only",PairingInfo.parse(PairingQr.grayscale(gray,size,size),0).code);
+    }
+    @Test public void desktopSliderUsesFiveStopsButRetainsAnAlreadySelectedMax() throws Exception {
+        JSONArray efforts=new JSONArray("[\"low\",\"medium\",\"high\",\"xhigh\",\"max\",\"ultra\"]");
+        JSONArray visible=ModelPresentation.sliderEfforts(efforts,"medium");assertEquals(5,visible.length());assertEquals("ultra",visible.getString(4));
+        assertEquals(6,ModelPresentation.sliderEfforts(efforts,"max").length());
+        assertEquals(3,ModelPresentation.sliderEfforts(new JSONArray("[\"low\",\"high\",\"max\"]"),"low").length());
+    }
+    @Test public void officialModelLabelsKeepUltraDistinctAndUseCatalogSpeed(){
+        assertEquals("GPT-6.1 Sol",ModelPresentation.name("GPT-6.1-Sol"));
+        assertEquals("GPT-6 Astra",ModelPresentation.name("gpt-6-astra"));
+        assertEquals("Custom",ModelPresentation.name("Custom"));
+        assertEquals("Ultra",ModelPresentation.effort("ultra"));assertEquals("Max",ModelPresentation.effort("max"));assertEquals("极高",ModelPresentation.effort("xhigh"));
+        assertEquals("2 倍速度，用量更高",ModelPresentation.speed("2x speed, increased usage"));
+        assertEquals("1.5 倍速，增加使用量",ModelPresentation.speed("1.5x speed"));
+    }
+    @Test public void readingRailContinuesPastTheMiddleWithoutWholeItemJumps(){
+        RailWindow window=new RailWindow();window.configure(80,25,79,false);
+        assertEquals(55f,window.centeredStart(79),0f);
+        assertEquals(55f,window.centeredStart(67),0f);
+        assertEquals(54.75f,window.centeredStart(66.75f),0f);
+        assertEquals(28.25f,window.centeredStart(40.25f),0f);
+        assertEquals(0f,window.centeredStart(0),0f);
+        assertEquals(.25f,RailWindow.progress(12.5f,10,20),0f);
+        assertEquals(1f,RailWindow.progress(25,10,20),0f);
+        assertEquals(0f,RailWindow.progress(5,10,20),0f);
+        assertEquals(0f,RailWindow.progress(10,10,10),0f);
+    }
+    @Test public void keyboardAnchoringUsesTheOldViewportAndLeftCancelHasAThreshold(){
+        assertTrue(MobileState.viewportAtBottom(10,9,1000,1000,20,48));
+        assertFalse(MobileState.viewportAtBottom(10,9,1000,600,20,48));
+        assertFalse(MobileState.viewportAtBottom(10,6,1000,1000,20,48));
+        assertFalse(NavigationPosition.cancelLeft(20,21,56));
+        assertFalse(NavigationPosition.cancelLeft(20,-35,56));
+        assertTrue(NavigationPosition.cancelLeft(20,-36,56));
+        assertTrue(NavigationPosition.cancelLeft(20,-140,56));
+    }
+    @Test public void sparseUpdatesRetainUnchangedTurnsAndRejectMissingBaselines() throws Exception {
+        JSONObject previous=new JSONObject("{\"version\":2,\"threads\":[{\"id\":\"chat\",\"turns\":[{\"id\":\"a\",\"input\":\"old\"},{\"id\":\"b\",\"input\":\"keep\"}]}]}");
+        JSONObject next=new JSONObject("{\"version\":3,\"sync\":\"delta\",\"baseVersion\":2,\"threads\":[{\"id\":\"chat\",\"turnOrder\":[\"b\",\"c\"],\"turns\":[{\"id\":\"c\",\"input\":\"latest\"}]}]}");
+        JSONArray rows=MobileState.merge(previous,next).getJSONArray("threads").getJSONObject(0).getJSONArray("turns");assertEquals(2,rows.length());assertEquals("keep",rows.getJSONObject(0).getString("input"));assertEquals("latest",rows.getJSONObject(1).getString("input"));
+        next.put("baseVersion",1);try{MobileState.merge(previous,next);fail("stale baseline accepted");}catch(Exception expected){}
+        next.put("baseVersion",2).getJSONArray("threads").getJSONObject(0).getJSONArray("turnOrder").put("missing");try{MobileState.merge(previous,next);fail("missing turn accepted");}catch(Exception expected){}
+    }
+    @Test public void incomingOrderRepairsAnOldTailWithoutLosingCachedMessageText() throws Exception {
+        JSONObject previous=new JSONObject("{\"threads\":[{\"id\":\"chat\",\"turns\":[{\"id\":\"b\",\"input\":\"b\"},{\"id\":\"c\",\"input\":\"c\"},{\"id\":\"a\",\"input\":\"a\"}]}]}");
+        JSONObject incoming=new JSONObject("{\"threads\":[{\"id\":\"chat\",\"turns\":[{\"id\":\"a\"},{\"id\":\"b\"},{\"id\":\"c\"},{\"id\":\"d\",\"input\":\"latest\"}]}]}");
+        JSONArray turns=MobileState.merge(previous,incoming).getJSONArray("threads").getJSONObject(0).getJSONArray("turns");
+        assertEquals("a",turns.getJSONObject(0).getString("id"));assertEquals("a",turns.getJSONObject(0).getString("input"));assertEquals("d",turns.getJSONObject(3).getString("id"));
+        assertEquals("latest",turns.getJSONObject(3).getString("input"));
+    }
+    @Test public void timelineWindowPagesBothWaysAndKeepsSpacingWhenKeyboardShrinksIt(){
+        RailWindow window=new RailWindow();window.configure(71,25,70,false);
+        assertEquals(46,window.start);assertEquals(70,window.at(100,0,100));assertFalse(window.step(1));
+        for(int i=0;i<46;i++)assertTrue(window.step(-1));assertFalse(window.step(-1));assertEquals(0,window.at(0,0,100));
+        java.util.Set<Integer> reached=new java.util.HashSet<>();do{for(int i=0;i<25;i++)reached.add(window.at(100f*i/24,0,100));}while(window.step(1));assertEquals(71,reached.size());
+        window.configure(71,9,40,false);assertEquals(9,window.capacity);assertEquals(36,window.start);assertEquals(40,window.at(50,0,100));
+        assertTrue(RailWindow.emphasis(0)>RailWindow.emphasis(1));assertTrue(RailWindow.emphasis(1)>RailWindow.emphasis(2));assertEquals(0f,RailWindow.emphasis(3),0f);
+        window.configure(0,9,0,false);assertEquals(-1,window.at(50,0,100));
+    }
+    @Test public void slidingTimelineCanReachEveryLoadedMessageAndClampsToItsEnds(){
+        assertEquals(-1,NavigationPosition.at(20,10,110,0));
+        assertEquals(0,NavigationPosition.at(100,10,110,1));
+        assertEquals(0,NavigationPosition.at(-50,10,110,71));
+        assertEquals(70,NavigationPosition.at(200,10,110,71));
+        for(int i=0;i<71;i++)assertEquals(i,NavigationPosition.at(10+100f*i/70,10,110,71));
+        assertEquals(35,NavigationPosition.at(60,10,110,71));
+    }
+    @Test public void questionRepliesAreReadableAndPendingQuestionsRequireLiveState() throws Exception {
+        String text="<send_user_message_question_reply>\n[{\"questionItemId\":\"id\",\"question\":\"Choose?\",\"answer\":\"One\"}]\n</send_user_message_question_reply>";
+        assertEquals("Choose?\n已回复：One",ChatRows.displayText(text));
+        assertEquals("plain",ChatRows.displayText("plain"));
+        assertEquals("<send_user_message_question_reply>bad",ChatRows.displayText("<send_user_message_question_reply>bad"));
+        JSONObject thread=new JSONObject().put("id","chat").put("ready",true).put("questions",new JSONArray().put(new JSONObject().put("id","request")));
+        assertEquals("question",ChatRows.build(thread).get(1).type);
+        thread.put("ready",false);assertEquals(1,ChatRows.build(thread).size());
+    }
+    @Test public void aNewDesktopMessageDuringPreparationCannotStarveTheChatList(){
+        RenderGate gate=new RenderGate();assertTrue(gate.begin());
+        // Many newer snapshots arrive while revision 1 is being prepared.
+        for(int revision=2;revision<200;revision++)assertFalse(gate.begin());
+        assertTrue(gate.complete(1,true));assertTrue(gate.begin());assertTrue(gate.complete(200,true));
+        // An old chat/page must never overwrite the newly selected chat.
+        assertTrue(gate.begin());assertFalse(gate.complete(201,false));assertTrue(gate.begin());assertTrue(gate.complete(202,true));
+    }
     @Test public void refreshCancellationDoesNotTurnAnOnlineSessionOfflineOrCommitAnOldChatResponse(){
         assertTrue(MobileState.pollObsolete(4,5,"chat","chat",true));
         assertTrue(MobileState.pollObsolete(4,4,"chat","other",true));

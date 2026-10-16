@@ -20,6 +20,8 @@ final class RemoteApi {
     final String fingerprint;
     volatile String token;
     private final SSLContext ssl;
+    private final javax.net.ssl.SSLSocketFactory socketFactory;
+    private final javax.net.ssl.HostnameVerifier verifier;
     private final Set<HttpsURLConnection> connections = ConcurrentHashMap.newKeySet();
     RemoteApi(String address, String fingerprint, String token) throws Exception {
         URI uri = new URI(address.trim());
@@ -40,20 +42,28 @@ final class RemoteApi {
                 } catch (Exception error) { throw new java.security.cert.CertificateException("电脑证书与配对指纹不符或已过期"); }
             }
         } }, new java.security.SecureRandom());
+        socketFactory=ssl.getSocketFactory();
+        verifier=(host,session)->{try{return matches(session.getPeerCertificates()[0]);}catch(Exception e){return false;}};
     }
+    private RemoteApi(RemoteApi owner){address=owner.address;fingerprint=owner.fingerprint;token=owner.token;ssl=owner.ssl;socketFactory=owner.socketFactory;verifier=owner.verifier;}
+    // Share TLS sessions and connection-pool identity, with independent cancellation.
+    RemoteApi readChannel(){return new RemoteApi(this);}
     private boolean matches(java.security.cert.Certificate cert) throws Exception {
         byte[] expected = new byte[32];
         for (int i = 0; i < 32; i++) expected[i] = (byte) Integer.parseInt(fingerprint.substring(i * 2, i * 2 + 2), 16);
         return MessageDigest.isEqual(expected, MessageDigest.getInstance("SHA-256").digest(cert.getEncoded()));
     }
     JSONObject call(String method, String path, JSONObject body, String operationId) throws Exception {
+        return call(method,path,body,operationId,8000,30000);
+    }
+    JSONObject call(String method, String path, JSONObject body, String operationId,int connectTimeout,int readTimeout) throws Exception {
         HttpsURLConnection connection = (HttpsURLConnection) new URL(address + path).openConnection();
         connections.add(connection);
         try {
-            connection.setSSLSocketFactory(ssl.getSocketFactory());
+            connection.setSSLSocketFactory(socketFactory);
             // Identity is the explicitly pinned certificate; IP addresses may change across networks.
-            connection.setHostnameVerifier((host, session) -> { try { return matches(session.getPeerCertificates()[0]); } catch (Exception e) { return false; } });
-            connection.setConnectTimeout(8000); connection.setReadTimeout(30000); connection.setInstanceFollowRedirects(false);
+            connection.setHostnameVerifier(verifier);
+            connection.setConnectTimeout(connectTimeout); connection.setReadTimeout(readTimeout); connection.setInstanceFollowRedirects(false);
             connection.setRequestMethod(method); connection.setRequestProperty("Accept", "application/json");
             if (token != null && !token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
             if (operationId != null) connection.setRequestProperty("Idempotency-Key", operationId);

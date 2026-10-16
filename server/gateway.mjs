@@ -1,5 +1,7 @@
 import https from 'node:https';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import { mobileStateWindow } from './state-sync.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 function fail(status, message) { return Object.assign(new Error(message), { status }); }
@@ -16,13 +18,22 @@ async function body(request) {
 }
 function reply(response, status, value) {
   if (response.destroyed || response.writableEnded) return;
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
-  response.end(JSON.stringify(value));
+  let bytes = Buffer.from(JSON.stringify(value));
+  const acceptsGzip = String(response.req?.headers['accept-encoding'] || '').split(',').some(part => {
+    const [encoding, ...params] = part.trim().split(';');
+    return encoding === 'gzip' && !params.some(p => /^\s*q\s*=\s*0(?:\.0*)?\s*$/.test(p));
+  });
+  const compressed = acceptsGzip && bytes.length >= 2048;
+  if (compressed) bytes = gzipSync(bytes, { level: 1 });
+  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+    vary: 'Accept-Encoding', 'content-length': bytes.length, ...(compressed ? { 'content-encoding': 'gzip' } : {}) });
+  response.end(bytes);
 }
 
 // No generic RPC proxy. Only explicitly configured chats and supported operations.
 export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
   const sessions = new Map(devices.map(device => [device.tokenHash, device]));
+  const syncWindows = new Map();
   let pairingUntil = now() + pairingTtlMs;
   const attempts = new Map(); const idempotency = new Map(); const locks = new Map();
   let persistence = Promise.resolve();
@@ -83,6 +94,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
       sessions.get(sessionHash).lastSeen = now();
       if (request.method === 'DELETE' && url.pathname === '/v1/session') {
         try { await mutateSessions(() => sessions.delete(sessionHash)); } catch { throw fail(500, '撤销失败'); }
+        syncWindows.delete(sessionHash);
         changed(); reply(response, 200, { revoked: true }); return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/threads') {
@@ -100,7 +112,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
         changed(); reply(response, 200, { selected: input.threadId }); return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/state') {
-        if (url.searchParams.get('after') === String(version)) {
+        if (url.searchParams.get('after') === String(version) && (url.searchParams.get('delta') !== '1' || syncWindows.has(sessionHash))) {
           if (waiters.size >= 32) throw fail(429, '连接过多');
           await new Promise(resolve => {
             const done = () => { clearTimeout(timer); waiters.delete(done); response.off('close', done); resolve(); };
@@ -108,11 +120,16 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
           });
         }
         if (!sessions.has(sessionHash)) throw fail(401, '设备授权已撤销');
-        reply(response, 200, { version, deviceId, connectionAddresses, threads: bridge.snapshot() }); return;
+        if (url.searchParams.get('delta') === '1') {
+          const result = mobileStateWindow(bridge.snapshot(), syncWindows.get(sessionHash), version, url.searchParams.get('after'));
+          syncWindows.set(sessionHash, result.baseline);
+          reply(response, 200, { version, deviceId, connectionAddresses, ...result.payload });
+        } else reply(response, 200, { version, deviceId, connectionAddresses, threads: bridge.snapshot() });
+        return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {
         const input = await body(request);
-        if (typeof input.threadId !== 'string' || !['start', 'steer', 'interrupt', 'approve', 'model'].includes(input.op)) throw fail(400, '不支持的操作');
+        if (typeof input.threadId !== 'string' || !['start', 'steer', 'interrupt', 'approve', 'model', 'answer'].includes(input.op)) throw fail(400, '不支持的操作');
         if (['start', 'steer'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000)) throw fail(400, '消息应为 1–16000 字符');
         if (!bridge.snapshot().some(thread => thread.id === input.threadId)) throw fail(403, '聊天不在授权范围内');
         const id = request.headers['idempotency-key'];
@@ -156,7 +173,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
     async revokeDevice(id) {
       const key = [...sessions.keys()].find(key => key.slice(0, 24) === id);
       if (!key) throw fail(404, '设备不存在');
-      await mutateSessions(() => sessions.delete(key)); changed(); return { revoked: true };
+      await mutateSessions(() => sessions.delete(key)); syncWindows.delete(key); changed(); return { revoked: true };
     },
   };
 }
