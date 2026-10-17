@@ -10,10 +10,14 @@ import { EasyTierManager } from './easytier.mjs';
 import { pairingInfo } from './pairing.mjs';
 const fail = (status, message) => Object.assign(Error(message), { status });
 const safeEqual = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {}, syncAutoStart = async () => {} }) {
+export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {}, syncAutoStart = async () => {}, restoreDelays = [1000, 3000, 10000, 30000] }) {
   let mutation = Promise.resolve(); const events = [];
+  let restoreTimer, restoreGeneration = 0, closed = false;
+  let recovery = { state: 'idle', attempts: 0, nextRetryAt: null };
+  const cancelRestore = () => { ++restoreGeneration; clearTimeout(restoreTimer); restoreTimer = null; recovery = { state: 'idle', attempts: 0, nextRetryAt: null }; };
+  const enqueue = operation => { const pending = mutation.catch(() => {}).then(operation); mutation = pending; return pending; };
   const record = message => { events.push({ at: new Date().toISOString(), message }); if (events.length > 50) events.shift(); };
-  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.16-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
+  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.16-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), recovery: { ...recovery }, events });
   const startConfigured = async () => {
     const saved = await store.load(); if (!saved) throw Error('请先保存连接配置');
     const config = { ...validateConfig(saved), secretCipher: saved.secretCipher };
@@ -38,6 +42,25 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
     try { return await startConfigured(); }
     catch (error) { record('连接启动失败：' + error.message); throw error; }
   };
+  const restoreAttempt = generation => enqueue(async () => {
+    if (closed || generation !== restoreGeneration) return;
+    recovery = { state: 'starting', attempts: recovery.attempts + 1, nextRetryAt: null };
+    try {
+      const saved = await store.load();
+      if (saved?.autoStart !== true) { cancelRestore(); return; }
+      if (runtime.status().running) { recovery = { ...recovery, state: 'ready', nextRetryAt: null }; return; }
+      await start();
+      if (closed || generation !== restoreGeneration) return;
+      recovery = { ...recovery, state: 'ready', nextRetryAt: null };
+    } catch {
+      if (closed || generation !== restoreGeneration) return;
+      const delay = restoreDelays[Math.min(recovery.attempts - 1, restoreDelays.length - 1)] ?? 30000;
+      recovery = { ...recovery, state: 'waiting', nextRetryAt: new Date(Date.now() + delay).toISOString() };
+      restoreTimer = setTimeout(() => { restoreTimer = null; void restoreAttempt(generation).catch(() => {}); }, delay);
+      restoreTimer.unref();
+    }
+  });
+  const restore = () => { cancelRestore(); return restoreAttempt(restoreGeneration); };
   const server = http.createServer(async (request, response) => {
     const reply = (code, body, type = 'application/json; charset=utf-8') => {
       response.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
@@ -61,9 +84,9 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
       let input; try { input = JSON.parse(Buffer.concat(chunks)); } catch { throw fail(400, '配置格式无效'); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail(400, '配置格式无效');
       const operation = mutation.catch(() => {}).then(async () => {
-        if (url.pathname === '/api/config') { const value = await store.save(input); await syncAutoStart(root); record('连接配置已保存，点击应用并启动后生效'); return value; }
-        if (url.pathname === '/api/start') return start();
-        if (url.pathname === '/api/stop') { await runtime.stop(); await easytier.stop(); record('手机连接服务已停止'); return status(); }
+        if (url.pathname === '/api/config') { const value = await store.save(input); cancelRestore(); await syncAutoStart(root); record('连接配置已保存，点击应用并启动后生效'); return value; }
+        if (url.pathname === '/api/start') { cancelRestore(); return start(); }
+        if (url.pathname === '/api/stop') { cancelRestore(); await runtime.stop(); await easytier.stop(); record('手机连接服务已停止'); return status(); }
         if (url.pathname === '/api/pairing') {
           if (input.apply === true) {
             const draft = validateConfig(input.config);
@@ -71,6 +94,7 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
             // Reject invalid mobile network settings before writing config or changing a live connection.
             await pairingInfo({ address:`https://${draft.host}:${draft.port}`, fingerprint:'0'.repeat(64), code:'preflight', expiresAt:new Date(Date.now()+600000).toISOString() }, draft, input);
             await store.save(input.config);
+            cancelRestore();
             await syncAutoStart(root);
             await start();
           }
@@ -84,8 +108,8 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
           return { ...info, ...runtime.pairing(input.rotate === true) };
         }
         if (url.pathname === '/api/revoke') { if (!runtime.active) throw Error('服务尚未运行'); const value = await runtime.active.gateway.revokeDevice(input.id); record('已撤销一台手机的授权'); return value; }
-        if (url.pathname === '/api/easytier-stop') { if (runtime.active?.config.mode === 'bundled') await runtime.stop(); await easytier.stop(); record('受管 EasyTier 已停止'); return status(); }
-        if (url.pathname === '/api/shutdown') { setTimeout(onShutdown, 100); return { stopping: true }; }
+        if (url.pathname === '/api/easytier-stop') { cancelRestore(); if (runtime.active?.config.mode === 'bundled') await runtime.stop(); await easytier.stop(); record('受管 EasyTier 已停止'); return status(); }
+        if (url.pathname === '/api/shutdown') { cancelRestore(); setTimeout(onShutdown, 100); return { stopping: true }; }
         if (url.pathname === '/api/elevate') {
           const script = fileURLToPath(new URL('../scripts/start-desktop-plugin.ps1', import.meta.url));
           const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Administrator', '-DataDirectory', root], { windowsHide: true, stdio: 'ignore' });
@@ -99,5 +123,5 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
   server.maxConnections = 20; server.requestTimeout = 30000; server.headersTimeout = 10000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   const url = `http://127.0.0.1:${server.address().port}/#${token}`;
-  return { server, token, url, status, start, async close() { await mutation.catch(() => {}); await runtime.stop(); await easytier.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, token, url, status, start, restore, async close() { closed = true; cancelRestore(); await mutation.catch(() => {}); await runtime.stop(); await easytier.stop(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }

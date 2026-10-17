@@ -24,7 +24,7 @@ try {
   manager = await createManager({ root, assets: join(here, 'web'), binDir: join(here, '..', 'vendor', 'easytier'), port: Number(process.env.CODEX_LAN_MANAGER_PORT || 19547), onShutdown: close, syncAutoStart: configureAutoStart });
   await atomicJson(join(root, 'manager.local.json'), { origin: new URL(manager.url).origin, token: manager.token, pid: process.pid });
   const config = await readJson(join(root, 'config.local.json'), null);
-  if (config?.autoStart) await manager.start().catch(() => {});
+  if (config?.autoStart === true) void manager.restore().catch(() => {});
   console.error('Codex 手机连接后台已启动（仅本机设置入口）');
 } catch (error) {
   await rm(join(lock, 'pid'), { force: true }); await rmdir(lock);

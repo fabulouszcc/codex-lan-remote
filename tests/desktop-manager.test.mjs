@@ -10,6 +10,52 @@ import { ConfigStore, validateConfig, assertNoSubnetConflict, dpapi, addresses }
 import { EasyTierManager } from '../desktop/easytier.mjs';
 const assets = new URL('../desktop/web/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
+async function recoveryFixture(t, { failCount = 2, autoStart = true } = {}) {
+  const host = addresses()[0]?.address;
+  if (!host) { t.skip('No IPv4 interface'); return; }
+  const root = await mkdtemp(join(tmpdir(), 'codex-lan-recovery-'));
+  let calls = 0, running = false;
+  const saved = { mode: 'existing', host, port: 9443, allowSelectedChats: true, autoStart };
+  const runtime = { status: () => ({ running }), stop: async () => { running = false; }, start: async () => { if (++calls <= failCount) throw Error('network not ready'); running = true; } };
+  const easytier = { status: () => ({ owned: false }), stop: async () => {} };
+  const store = { load: async () => saved, public: async () => saved, save: async input => Object.assign(saved, input) };
+  const manager = await createManager({ root, assets: decodeURIComponent(assets), port: 0, runtime, easytier, store, restoreDelays: [20] });
+  t.after(() => manager.close());
+  const post = (path, body = {}) => fetch(new URL(path, manager.url), { method: 'POST', headers: { authorization: 'Bearer ' + manager.token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { manager, calls: () => calls, post };
+}
+
+test('login restore retries a late network until the gateway is listening', async t => {
+  const f = await recoveryFixture(t); if (!f) return;
+  await f.manager.restore();
+  assert.equal((await f.manager.status()).recovery.state, 'waiting');
+  const deadline = Date.now() + 2000;
+  while (!(await f.manager.status()).gateway.running && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  const state = await f.manager.status();
+  assert.equal(state.gateway.running, true); assert.equal(state.recovery.state, 'ready'); assert.equal(f.calls(), 3);
+  await new Promise(resolve => setTimeout(resolve, 60)); assert.equal(f.calls(), 3);
+});
+
+test('manual stop cancels a pending login retry instead of restarting the connection', async t => {
+  const f = await recoveryFixture(t, { failCount: 1000 }); if (!f) return;
+  await f.manager.restore(); assert.equal((await f.post('/api/stop')).status, 200);
+  const calls = f.calls(); await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(f.calls(), calls); assert.equal((await f.manager.status()).gateway.running, false);
+  assert.equal((await f.manager.status()).recovery.nextRetryAt, null);
+});
+
+test('saving disabled auto-start cancels pending recovery and does not start a gateway', async t => {
+  const f = await recoveryFixture(t, { failCount: 1000 }); if (!f) return;
+  await f.manager.restore(); assert.equal((await f.post('/api/config', { autoStart: false })).status, 200);
+  const calls = f.calls(); await new Promise(resolve => setTimeout(resolve, 80)); await f.manager.restore();
+  assert.equal(f.calls(), calls); assert.equal((await f.manager.status()).recovery.state, 'idle');
+});
+
+test('an opted-out login never starts the saved connection', async t => {
+  const f = await recoveryFixture(t, { autoStart: false }); if (!f) return;
+  await f.manager.restore(); await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(f.calls(), 0);
+});
+
 test('saving auto-start synchronizes only the explicitly configured manager integration', async t => {
   const root=await mkdtemp(join(tmpdir(),'codex-lan-auto-save-'));let saved=null;const calls=[];
   const runtime={status:()=>({running:false}),stop:async()=>{}};

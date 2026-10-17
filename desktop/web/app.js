@@ -40,6 +40,10 @@ async function refresh() {
   latest = await call('status'); const running = latest.gateway.running;
   $('badge').textContent = running ? modeName(latest.gateway.mode || latest.config?.mode) + '已启用' : '尚未启动'; $('activeMode').textContent = running ? '当前启用 · ' + modeName(latest.gateway.mode || latest.config?.mode) : '当前连接'; $('address').textContent = latest.gateway.address || '尚未启动';
   $('desktopStatus').textContent = running ? `实时可控聊天 ${latest.gateway.chats.filter(row => row.ready && row.writable).length} 个 · 最近在线手机 ${latest.gateway.devices.filter(row => row.recentlyOnline).length} 台` : '选择连接方式，保存并启用';
+  if (!running && ['starting','waiting'].includes(latest.recovery?.state)) {
+    $('badge').textContent = latest.recovery.state === 'starting' ? '正在恢复连接' : '等待网络就绪';
+    $('desktopStatus').textContent = '正在自动恢复已保存的连接，第 ' + latest.recovery.attempts + ' 次尝试；网络就绪后会自动重试，也可点击停止取消。';
+  }
   $('etStatus').textContent = `受管实例：${latest.easytier.state} · 版本 ${latest.easytier.version}`;
   if (!initialized) { populate(latest.config, latest); initialized = true; }
   $('lanAddresses').replaceChildren(...latest.addresses.map(row => { const option = document.createElement('option'); option.value = row.address; option.label = row.name; return option; }));

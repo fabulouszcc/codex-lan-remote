@@ -80,9 +80,29 @@ try {
 '@
 $taskLaunch = $taskLaunch.Replace('__STATUS__', (Join-Path $taskFullRoot 'background-status.local.json').Replace("'","''")).Replace('__RUNNER__', $taskRunner.Replace("'","''")).Replace('__ROOT__', $taskFullRoot.Replace("'","''")).Replace('__FALLBACK__', (Join-Path ([IO.Path]::GetTempPath()) 'codex-lan-startup-status.local.json').Replace("'","''"))
 $taskArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskLaunch))
-$taskAction = New-ScheduledTaskAction -Execute $taskPowerShell -Argument $taskArgs
+# Starting a console executable directly can create a terminal before PowerShell
+# processes -WindowStyle. WScript is a GUI host; Run(..., 0, True) creates its
+# child hidden from the start and waits so Scheduler still observes failures.
+$taskWindowlessHost = Join-Path $env:SystemRoot 'System32\wscript.exe'
+if (-not (Test-Path -LiteralPath $taskWindowlessHost)) { throw 'Windows 无窗口脚本宿主不可用，未更新后台任务' }
+$taskWindowlessPath = Join-Path $taskFullRoot 'background-launch.local.vbs'
+$taskWindowlessCommand = '"' + $taskPowerShell + '" ' + $taskArgs
+$taskWindowlessScript = @'
+Option Explicit
+Dim shell, result
+On Error Resume Next
+Set shell = CreateObject("WScript.Shell")
+If Err.Number <> 0 Then WScript.Quit 1
+result = shell.Run("__COMMAND__", 0, True)
+If Err.Number <> 0 Then WScript.Quit 1
+WScript.Quit result
+'@
+$taskWindowlessScript = $taskWindowlessScript.Replace('__COMMAND__', $taskWindowlessCommand.Replace('"','""'))
+[IO.File]::WriteAllText($taskWindowlessPath, $taskWindowlessScript, [Text.Encoding]::ASCII)
+$taskAction = New-ScheduledTaskAction -Execute $taskWindowlessHost -Argument ('//B //Nologo "' + $taskWindowlessPath + '"')
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel $taskLevel
 $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $taskUser
+$taskTrigger.Delay = 'PT15S'
 $taskSettings = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $taskName -Action $taskAction -Principal $taskPrincipal -Trigger $taskTrigger -Settings $taskSettings -Description $taskMarker -Force -ErrorAction Stop | Out-Null
 $taskValue = @{kind='windows-task'; configured=$true; elevated=[bool]$taskElevated}
