@@ -4,6 +4,24 @@ import org.json.*;
 import static org.junit.Assert.*;
 
 public class MobileStateTest {
+    @Test public void usageRingsDistinguishUnavailableFromEmptyAndLabelActualWindows() throws Exception {
+        assertEquals(-1f,UsagePresentation.remaining(null),0f);
+        assertEquals(-1f,UsagePresentation.remaining(new JSONObject().put("remainingPercent",JSONObject.NULL)),0f);
+        assertEquals(0f,UsagePresentation.remaining(new JSONObject().put("remainingPercent",0)),0f);
+        assertEquals(100f,UsagePresentation.remaining(new JSONObject().put("remainingPercent",100)),0f);
+        assertEquals(-1f,UsagePresentation.remaining(new JSONObject().put("remainingPercent",101)),0f);
+        assertEquals("5 小时",UsagePresentation.period(new JSONObject().put("windowDurationMins",300),"短周期"));
+        assertEquals("7 天",UsagePresentation.period(new JSONObject().put("windowDurationMins",10080),"长周期"));
+    }
+    @Test public void connectionDotSeparatesLiveBusyPendingAndDisconnectedStates() throws Exception {
+        JSONObject online=new JSONObject().put("online",true),thread=new JSONObject().put("ready",true).put("activeTurnId",JSONObject.NULL);
+        assertEquals("connecting",UsagePresentation.connection(null,null,""));assertEquals("connected",UsagePresentation.connection(online,thread,""));
+        thread.put("activeTurnId","turn");assertEquals("busy",UsagePresentation.connection(online,thread,""));
+        thread.put("approvals",new JSONArray().put(new JSONObject()));assertEquals("waiting",UsagePresentation.connection(online,thread,""));
+        assertEquals("waiting",UsagePresentation.connection(online,null,""));
+        assertEquals("error",UsagePresentation.connection(new JSONObject(),thread,"连接中断，正在重连"));
+        assertEquals("offline",UsagePresentation.connection(new JSONObject(),thread,"后台同步已停止"));
+    }
     @Test public void dhcpQrWaitsForNativeAssignmentAndNeverUsesDesktopIpAsPhoneIp() throws Exception {
         JSONObject et=new JSONObject().put("name","fixture").put("secret","").put("dhcp",true).put("networkCidr","10.90.0.1/24").put("peers","tcp://public.easytier.cn:11010");
         JSONObject payload=new JSONObject().put("address","https://10.90.0.1:9443").put("fingerprint","a".repeat(64)).put("code","test").put("networkMode","easytier").put("easytier",et);

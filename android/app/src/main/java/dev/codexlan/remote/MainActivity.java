@@ -30,6 +30,10 @@ public final class MainActivity extends Activity {
     private LaunchAnimationView launchAnimation;
     private LinearLayout root;
     private TextView status, sendStatus;
+    private UsageRingsView usageRings;
+    private android.graphics.drawable.GradientDrawable connectionDot;
+    private PopupWindow usagePopup;
+    private TextView usagePrimary,usageSecondary,usageUpdated;
     private EditText composer;
     private Button send;
     private TextView modelChoice,latestJump;
@@ -96,6 +100,7 @@ public final class MainActivity extends Activity {
     private final android.content.BroadcastReceiver updates = new android.content.BroadcastReceiver() {
         @Override public void onReceive(android.content.Context context, android.content.Intent intent) {
             if(PairingCoordinator.UPDATE.equals(intent.getAction())){refreshPairingUi();return;}
+            if(SessionService.USAGE_UPDATE.equals(intent.getAction())){updateUsageIndicator();return;}
             if(connectionGuideVisible)return;
             if (api == null || SessionService.latest == null || !api.fingerprint.equals(SessionService.latest.optString("computer"))) return;
             try { render(SessionService.latest); } catch (Exception error) { status.setText("同步显示失败：" + error.getMessage()); }
@@ -310,9 +315,12 @@ public final class MainActivity extends Activity {
         Button menu = icon("menu","会话列表",false); header.addView(menu,new LinearLayout.LayoutParams(dp(48),dp(48))); menu.setOnClickListener(v -> chooseChat());
         LinearLayout heading = vertical(); selectChat = new Button(this); selectChat.setText("Codex"); selectChat.setTextColor(foreground); selectChat.setTextSize(18); selectChat.setAllCaps(false); selectChat.setGravity(android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL); selectChat.setBackgroundColor(Color.TRANSPARENT); selectChat.setPadding(dp(4),0,0,0); selectChat.setSingleLine(true); selectChat.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.addView(selectChat,new LinearLayout.LayoutParams(-1,dp(31))); selectChat.setOnClickListener(v -> chooseChat());
-        status = text("正在连接电脑…",11,muted); status.setPadding(dp(4),0,0,0); status.setTextIsSelectable(false); status.setSingleLine(true); heading.addView(status);
+        LinearLayout statusLine=new LinearLayout(this);statusLine.setGravity(android.view.Gravity.CENTER_VERTICAL);statusLine.setPadding(dp(4),0,0,0);
+        View dot=new View(this);connectionDot=new android.graphics.drawable.GradientDrawable();connectionDot.setShape(android.graphics.drawable.GradientDrawable.OVAL);connectionDot.setColor(Color.rgb(255,159,10));dot.setBackground(connectionDot);LinearLayout.LayoutParams dotSpace=new LinearLayout.LayoutParams(dp(6),dp(6));dotSpace.rightMargin=dp(6);statusLine.addView(dot,dotSpace);
+        status = text("正在连接电脑…",11,muted); status.setTextIsSelectable(false); status.setSingleLine(true);statusLine.addView(status);heading.addView(statusLine);
         status.setContentDescription("切换连接方式");status.setOnClickListener(v->connectionModeDialog(v));
-        header.addView(heading,new LinearLayout.LayoutParams(0,dp(56),1)); Button settings = icon("settings","设置",false); header.addView(settings,new LinearLayout.LayoutParams(dp(48),dp(48))); settings.setOnClickListener(v -> settingsPage()); root.addView(header);
+        statusLine.setOnClickListener(v->connectionModeDialog(status));
+        header.addView(heading,new LinearLayout.LayoutParams(0,dp(56),1));usageRings=new UsageRingsView(this);header.addView(usageRings,new LinearLayout.LayoutParams(dp(48),dp(48)));usageRings.setOnClickListener(v->usageDialog());updateUsageIndicator();root.addView(header);
         renderRevision++;deferredRows=null;displayedChat="";listScrolling=false;
         scroll=new TranscriptListView(this);scroll.onViewportSettled=this::updateLatestJump;scroll.setDivider(null);scroll.setDividerHeight(0);scroll.setCacheColorHint(Color.TRANSPARENT);scroll.setSelector(android.R.color.transparent);scroll.setClipToPadding(false);scroll.setPadding(0,dp(20),0,dp(20));scroll.setVerticalScrollBarEnabled(false);
         chatAdapter=new ChatAdapter();scroll.setAdapter(chatAdapter);
@@ -391,19 +399,51 @@ public final class MainActivity extends Activity {
         if (selectedThreadId.isEmpty() && threads.length() > 0) selectedThreadId = threads.getJSONObject(0).getString("id");
         currentThread = null;
         for (int i = 0; i < threads.length(); i++) if (threads.getJSONObject(i).getString("id").equals(selectedThreadId)) currentThread = threads.getJSONObject(i);
+        updateConnectionDot();updateUsageIndicator();
         if (currentThread == null) {
             status.setText(state.optBoolean("online") ? "正在加载所选聊天历史…" : "离线 · 暂无该聊天的本地记录");
             renderRevision++;renderHandler.removeCallbacks(prepareRows);deferredRows=null;chatAdapter.replace(java.util.Collections.emptyList());jumpRail.entries(java.util.Collections.emptyList());jumpRail.cancel();railChat="";setButtons(false);displayedChat="";return;
         }
         selectChat.setText(currentThread.optString("name", "Codex"));
         status.setText(!state.optBoolean("online") ? "离线 · 显示本地保存记录 · " + SessionService.message
-            : currentThread.optBoolean("ready") ? (!MobileState.activeTurnId(currentThread).isEmpty() ? "● 正在处理" : "● 已连接电脑")
+            : currentThread.optBoolean("ready") ? (currentThread.optJSONArray("approvals")!=null&&currentThread.optJSONArray("approvals").length()>0?"等待审批":currentThread.optJSONArray("questions")!=null&&currentThread.optJSONArray("questions").length()>0?"等待回复":!MobileState.activeTurnId(currentThread).isEmpty()?"正在处理":"已连接电脑")
             : "已连接 · 历史可读，桌面聊天尚未就绪");
         if (SessionService.message.contains("保存失败")) status.append(" · " + SessionService.message);
         status.append(" · "+networkModeLabel());
         String selectedModel=currentThread.optString("model"),effort=currentThread.optString("reasoningEffort");((PowerLabel)modelChoice).power("ultra".equals(effort),"priority".equals(currentThread.optString("serviceTier")));modelChoice.setText(selectedModel.isEmpty()?"选择模型  ⌄":ModelPresentation.name(selectedModel)+(effort.isEmpty()?"":" · "+effortLabel(effort))+"  ⌄");
         setButtons(currentThread.optBoolean("ready"));loadModels(false);
         renderRevision++;if(!currentThread.optString("id").equals(displayedChat))deferredRows=null;if(!renderHandler.hasCallbacks(prepareRows))renderHandler.postDelayed(prepareRows,100);
+    }
+    private void updateConnectionDot(){
+        if(connectionDot==null)return;String state=UsagePresentation.connection(currentState,currentThread,SessionService.message);int color;
+        switch(state){case "connected":color=Color.rgb(48,209,88);break;case "busy":color=Color.rgb(10,132,255);break;case "error":color=Color.rgb(255,69,58);break;case "offline":color=Color.rgb(142,142,147);break;default:color=Color.rgb(255,159,10);}
+        connectionDot.setColor(color);
+    }
+    private JSONObject visibleUsage(){return api!=null&&api.fingerprint.equals(SessionService.usageComputer)?SessionService.usage:null;}
+    private void updateUsageIndicator(){
+        JSONObject value=visibleUsage();boolean online=currentState!=null&&currentState.optBoolean("online");
+        if(usageRings!=null)usageRings.quota(value,online);
+        if(usagePrimary!=null&&usagePopup!=null&&usagePopup.isShowing())fillUsageDetails(value,online);
+    }
+    private String usageLine(JSONObject window,String fallback){
+        String label=UsagePresentation.period(window,fallback)+" · "+UsagePresentation.percent(window);long reset=window==null?0:window.optLong("resetsAt");
+        if(reset>0)label+="\n"+(reset*1000L<=System.currentTimeMillis()?"等待额度刷新":"重置于 "+new java.text.SimpleDateFormat("M月d日 HH:mm",java.util.Locale.CHINA).format(new java.util.Date(reset*1000L)));
+        return label;
+    }
+    private void fillUsageDetails(JSONObject value,boolean online){
+        usagePrimary.setText("外环 · "+usageLine(value==null?null:value.optJSONObject("primary"),"短周期"));
+        usageSecondary.setText("内环 · "+usageLine(value==null?null:value.optJSONObject("secondary"),"长周期"));
+        long at=value==null?0:value.optLong("updatedAt");
+        usageUpdated.setText(value==null||!value.optBoolean("available")?"暂未取得额度，请保持电脑连接。":(!online?"离线 · ":value.optBoolean("stale")?"上次读取 · ":"更新于 ")+(at>0?new java.text.SimpleDateFormat("HH:mm",java.util.Locale.CHINA).format(new java.util.Date(at)):"未知时间"));
+    }
+    private void usageDialog(){
+        if(usagePopup!=null)usagePopup.dismiss();LinearLayout card=vertical();card.setPadding(dp(20),dp(18),dp(20),dp(18));card.setBackground(rounded(Color.rgb(37,37,39),24));
+        TextView title=text("剩余额度",17,foreground);title.setTypeface(null,Typeface.BOLD);card.addView(title);
+        usagePrimary=text("",14,UsageRingsView.OUTER);usagePrimary.setPadding(0,dp(16),0,dp(12));card.addView(usagePrimary);
+        usageSecondary=text("",14,UsageRingsView.INNER);usageSecondary.setPadding(0,0,0,dp(14));card.addView(usageSecondary);
+        usageUpdated=text("",12,muted);card.addView(usageUpdated);card.addView(text("额度按账号共享，每分钟自动更新。",12,muted));
+        fillUsageDetails(visibleUsage(),currentState!=null&&currentState.optBoolean("online"));
+        usagePopup=AnchoredMenu.show(this,usageRings,card,dp(292),false);usagePopup.setOnDismissListener(()->{usagePopup=null;usagePrimary=null;usageSecondary=null;usageUpdated=null;});
     }
     private View toolCard(JSONObject tool,String key) {
         LinearLayout card=vertical();card.setPadding(dp(12),dp(4),dp(12),dp(8));card.setBackground(rounded(Color.rgb(29,29,29),12));
@@ -827,12 +867,13 @@ public final class MainActivity extends Activity {
         settingRow(items,"通知与后台运行","任务完成、审批提醒与系统权限",this::notificationSettings);
         settingRow(items,"重新同步","重新连接电脑并刷新聊天状态",()->{beginPolling(true);toast("正在重新同步");});
         settingRow(items,"查看连接引导","预览扫码与配对页面，保留当前连接",()->{dialog.dismiss();connectionPage();});
-        items.addView(text("关于",13,muted));items.addView(text("Codex LAN · 0.4.12 Preview\n非官方远控客户端",14,muted));
+        items.addView(text("关于",13,muted));items.addView(text("Codex LAN · "+appVersion()+"\n非官方远控客户端",14,muted));
         settingRow(items,"清除本机配对","删除本机连接信息，重新配对电脑",()->new AlertDialog.Builder(this).setTitle("清除本机配对？").setMessage("手机上的连接信息将删除。电脑端的授权记录仍需在电脑撤销；EasyTier 配置保留。")
             .setNegativeButton("返回",null).setPositiveButton("清除",(d,w)->{generation++;api.cancel();stopService(new android.content.Intent(this,SessionService.class));SessionService.latest=null;api=null;currentState=null;selectedThreadId="";drafts.clear();storage.clear();dialog.dismiss();connectionPage();}).show());
         android.os.Handler refresh=new android.os.Handler(getMainLooper());Runnable networkRefresh=new Runnable(){public void run(){networkHint.setText(EasyTierVpnService.state);if(dialog.isShowing())refresh.postDelayed(this,1000);}};dialog.setOnDismissListener(d->refresh.removeCallbacks(networkRefresh));
         dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(-1,-1);refresh.post(networkRefresh);
     }
+    private String appVersion(){try{return getPackageManager().getPackageInfo(getPackageName(),0).versionName;}catch(Exception ignored){return "Preview";}}
     private void notificationSettings() {
         new AlertDialog.Builder(this).setTitle("通知与后台同步")
             .setItems(new String[]{"隐藏后台同步运行提示", "隐藏 EasyTier 运行提示", "任务完成：横幅/锁屏提醒", "需要审批：横幅/锁屏提醒", "全部通知类别与权限", "HyperOS 后台/省电设置"}, (dialog, which) -> {
@@ -884,12 +925,12 @@ public final class MainActivity extends Activity {
     private void toast(String value) { Toast.makeText(this, value, Toast.LENGTH_LONG).show(); }
     @Override protected void onStart() {
         super.onStart(); visible = true;
-        android.content.IntentFilter filter = new android.content.IntentFilter(SessionService.UPDATE);filter.addAction(PairingCoordinator.UPDATE);
+        android.content.IntentFilter filter = new android.content.IntentFilter(SessionService.UPDATE);filter.addAction(PairingCoordinator.UPDATE);filter.addAction(SessionService.USAGE_UPDATE);
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(updates, filter, RECEIVER_NOT_EXPORTED); else registerReceiver(updates, filter);
         refreshPairingUi();
         if(api==null&&connectionGuideVisible&&!PairingCoordinator.busy()&&!PairingCoordinator.failed())try{JSONObject pending=PairingCoordinator.pending(this);if(pending!=null&&"waiting".equals(pending.optString("phase"))&&android.net.VpnService.prepare(this)==null)PairingCoordinator.start(this);}catch(Exception ignored){}
         if (api != null) beginPolling();
     }
-    @Override protected void onStop() { visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } sending = false; dismissRailPreview();dismissModelPopup();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
+    @Override protected void onStop() { visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } sending = false; dismissRailPreview();dismissModelPopup();if(usagePopup!=null)usagePopup.dismiss();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
     @Override protected void onDestroy() { generation++;renderRevision++;renderHandler.removeCallbacks(prepareRows);renderHandler.removeCallbacks(flushRows);renderWorker.shutdownNow(); if (api != null) api.cancel(); worker.shutdownNow(); super.onDestroy(); }
 }

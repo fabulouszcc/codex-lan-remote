@@ -100,6 +100,9 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
       if (request.method === 'GET' && url.pathname === '/v1/threads') {
         reply(response, 200, { threads: await bridge.catalog() }); return;
       }
+      if (request.method === 'GET' && url.pathname === '/v1/usage') {
+        reply(response, 200, await bridge.usage()); return;
+      }
       if (request.method === 'GET' && url.pathname === '/v1/models') {
         const threadId=url.searchParams.get('threadId');
         if(!bridge.snapshot().some(thread=>thread.id===threadId))throw fail(403,'聊天不在授权范围内');

@@ -16,7 +16,7 @@ for await (const line of lines) {
     if (message.id === undefined) continue;
     let result;
     if (message.method === 'initialize') {
-      result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.4.15-preview' } };
+      result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.4.16-preview' } };
       if (!initialized) {
         initialized = true;
         // Keep the MCP handshake responsive while the saved network comes up.

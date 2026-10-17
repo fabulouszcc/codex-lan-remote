@@ -37,6 +37,13 @@ test('model discovery requires pairing and a known chat',async t=>{
   assert.equal((await request('GET','/v1/models?threadId=unknown',undefined,headers)).status,403);
   const response=await request('GET','/v1/models?threadId=allowed-chat',undefined,headers);assert.equal(response.status,200);assert.equal(response.data.models[0].model,'available');
 });
+
+test('account quota is available only to paired clients',async t=>{
+  const f=await fixture(t);f.bridge.usage=async()=>({available:true,primary:{remainingPercent:60,windowDurationMins:300,resetsAt:12345},secondary:null,updatedAt:1,stale:false});
+  assert.equal((await f.request('GET','/v1/usage')).status,401);
+  const token=await f.pair();const response=await f.request('GET','/v1/usage',undefined,{authorization:'Bearer '+token});
+  assert.equal(response.status,200);assert.equal(response.data.primary.remainingPercent,60);
+});
 async function fixture(t, options = {}) {
   const bridge = new FakeBridge(); const saved = [];
   const gateway = createGateway({ tls, bridge, deviceId: 'test-device', pairingCode: 'test-pairing-code', saveDevices: async value => saved.push(structuredClone(value)), ...options });

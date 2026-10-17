@@ -54,6 +54,9 @@ export class DesktopBridge extends EventEmitter {
     for (const entry of this.entries.values()) rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });
     return [...rows.values()];
   }
+  async usage() {
+    return this.historyReader?.usage ? this.historyReader.usage() : {available:false,primary:null,secondary:null,updatedAt:null,stale:true};
+  }
   async openThread(id) {
     if (this.entries.has(id)) {
       const entry = this.entries.get(id); entry.historyReady = false;

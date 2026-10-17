@@ -4,7 +4,7 @@ $taskRoot = Split-Path -Parent $PSScriptRoot
 if (-not $NodePath) { $NodePath = (Get-Command node.exe -ErrorAction Stop).Source }
 $taskVersion = (& $NodePath --version).Trim()
 if ($taskVersion -notmatch '^v24\.') { throw '桌面插件需要 Node.js 24 运行时' }
-$taskOutput = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.4.15-preview'
+$taskOutput = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.4.16-preview'
 $taskPlugin = Join-Path $taskOutput 'plugins\codex-lan-desktop'
 New-Item -ItemType Directory -Force -Path $taskPlugin | Out-Null
 Copy-Item -LiteralPath (Join-Path $taskRoot 'plugins\codex-lan-desktop\.codex-plugin') -Destination $taskPlugin -Recurse -Force
@@ -105,7 +105,7 @@ foreach ($taskPsFile in @(Get-ChildItem -LiteralPath $taskOutput -Recurse -File 
 $taskParseCheck = '$ProgressPreference="SilentlyContinue";$failures=@();$count=0;Get-ChildItem -LiteralPath ''' + $taskOutput.Replace("'","''") + ''' -Recurse -Filter *.ps1 | ForEach-Object {$count++;$t=$null;$e=$null;[Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$t,[ref]$e)|Out-Null;foreach($problem in $e){$failures+=$problem.ErrorId}};[pscustomobject]@{WindowsPowerShellScripts=$count;Errors=$failures.Count}|ConvertTo-Json -Compress;if($failures.Count){exit 1}'
 & powershell.exe -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($taskParseCheck)))
 if ($LASTEXITCODE -ne 0) { throw '发布包中的脚本无法由 Windows PowerShell 正确解析' }
-$taskZip = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.4.15-preview.zip'
+$taskZip = Join-Path $taskRoot '.local\releases\codex-lan-desktop-0.4.16-preview.zip'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $taskZipStream = [IO.File]::Open($taskZip, [IO.FileMode]::Create)
 $taskZipWriter = [IO.Compression.ZipArchive]::new($taskZipStream, [IO.Compression.ZipArchiveMode]::Create)

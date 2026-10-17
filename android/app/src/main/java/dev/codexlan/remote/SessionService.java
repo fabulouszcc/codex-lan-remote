@@ -14,6 +14,13 @@ import java.util.concurrent.Executors;
 /** Owns background sync; the Activity renders this snapshot or the encrypted cache. */
 public final class SessionService extends Service {
     static final String UPDATE = "dev.codexlan.remote.STATE_CHANGED";
+    static final String USAGE_UPDATE = "dev.codexlan.remote.USAGE_CHANGED";
+    static volatile JSONObject usage;
+    static volatile String usageComputer="";
+    private final ExecutorService usageWorker=Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean usageLoading=new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile long usageFetchedAt;
+    private volatile RemoteApi usageApi;
     static volatile JSONObject latest;
     static volatile String message = "尚未连接";
     private volatile boolean stopped, started;
@@ -44,6 +51,7 @@ public final class SessionService extends Service {
             if (!started) {
                 JSONObject connection = new SecureSession(this).load(); if (connection == null) { stopSelf(); return START_NOT_STICKY; }
                 api = new RemoteApi(connection.getString("address"), connection.getString("fingerprint"), connection.getString("token"));
+                if(!api.fingerprint.equals(usageComputer)){usage=null;usageComputer=api.fingerprint;}
                 cache = new HistoryCache(this, api.fingerprint);
                 try { latest = MobileState.offline(cache.load()); } catch (Exception damaged) { latest = new JSONObject(); }
                 latest.put("computer", api.fingerprint); selection = latest.optString("selectedThreadId");
@@ -112,7 +120,7 @@ public final class SessionService extends Service {
                 }
                 // One brief success notice per sync session; polling/reconnection never reposts it.
                 if (!connectionAnnounced) { connectionAnnounced = true; notifications.connected(); }
-                broadcast();refreshCatalog(owner,epoch);
+                broadcast();refreshCatalog(owner,epoch);refreshUsage(owner);
             } catch (Exception error) {
                 if (stopped) break;
                 if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api)){version="";opened="";continue;}
@@ -123,9 +131,17 @@ public final class SessionService extends Service {
             } finally { synchronized(pollLock){if(pollApi==polling)pollApi=null;}if(polling!=null)polling.cancel(); }
         }
     }
+    private void refreshUsage(RemoteApi owner){
+        if(stopped||System.currentTimeMillis()-usageFetchedAt<60000||!usageLoading.compareAndSet(false,true))return;
+        usageWorker.execute(()->{RemoteApi channel=owner.readChannel();usageApi=channel;try{
+            JSONObject value=channel.call("GET","/v1/usage",null,null);
+            if(!stopped&&owner==api){usage=value;usageComputer=owner.fingerprint;sendBroadcast(new Intent(USAGE_UPDATE).setPackage(getPackageName()));}
+        }catch(Exception ignored){if(!stopped&&owner==api){if(usage!=null)try{usage=new JSONObject(usage.toString()).put("stale",true);}catch(Exception unused){}sendBroadcast(new Intent(USAGE_UPDATE).setPackage(getPackageName()));} }
+        finally{if(owner==api)usageFetchedAt=System.currentTimeMillis();channel.cancel();usageApi=null;usageLoading.set(false);}});
+    }
     @Override public void onDestroy() {
         stopped = true;cancelPoll(); if (api != null) api.cancel(); if (notifications != null) notifications.disconnected();
         try { if (latest != null) latest = MobileState.offline(latest); if (cache != null && latest != null) cache.save(latest); } catch (Exception ignored) {}
-        if(catalogApi!=null)catalogApi.cancel();catalogWorker.shutdownNow();worker.shutdownNow(); stopForeground(STOP_FOREGROUND_REMOVE); message = "后台同步已停止"; broadcast(); super.onDestroy();
+        if(usageApi!=null)usageApi.cancel();usageWorker.shutdownNow();if(catalogApi!=null)catalogApi.cancel();catalogWorker.shutdownNow();worker.shutdownNow(); stopForeground(STOP_FOREGROUND_REMOVE); message = "后台同步已停止"; broadcast(); super.onDestroy();
     }
 }

@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { turnTimeline, turnInput } from './turn-timeline.mjs';
+import { accountUsage } from './account-usage.mjs';
 export class HistoryReader {
   constructor(binary) { this.binary = binary; this.pending = new Map(); this.sequence = 0; }
   async connect() {
@@ -24,6 +25,7 @@ export class HistoryReader {
     this.lines = createInterface({ input: child.stdout });
     this.lines.on('line', line => {
       let value; try { value = JSON.parse(line); } catch { return; }
+      if (value.method === 'account/updated' || value.method === 'account/rateLimits/updated') this.usageAt = 0;
       if (value.method && value.id !== undefined) {
         child.stdin.write(JSON.stringify({ id: value.id, error: { code: -32601, message: 'Read-only history client' } }) + '\n'); return;
       }
@@ -36,7 +38,7 @@ export class HistoryReader {
     this.initialized = true;
   }
   request(method, params) {
-    if (!['initialize', 'thread/list', 'thread/turns/list', 'model/list'].includes(method)) throw Error('历史客户端禁止该操作');
+    if (!['initialize', 'thread/list', 'thread/turns/list', 'model/list', 'account/rateLimits/read'].includes(method)) throw Error('历史客户端禁止该操作');
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => { this.pending.delete(id); reject(Error('历史读取超时')); }, 15000);
@@ -66,6 +68,20 @@ export class HistoryReader {
       cursor=value.nextCursor;if(!cursor)break;
     }
     return result;
+  }
+  async usage() {
+    if (this.usageCache && Date.now() - this.usageAt < 55000) return this.usageCache;
+    if (this.usageLoading) return this.usageLoading;
+    this.usageLoading = (async () => {
+      try {
+        await this.connect();
+        this.usageCache = accountUsage(await this.request('account/rateLimits/read', {excludeResetCreditDetails:true}));
+      } catch {
+        this.usageCache = this.usageCache ? {...this.usageCache,stale:true} : {available:false,primary:null,secondary:null,updatedAt:null,stale:true};
+      }
+      this.usageAt = Date.now(); return this.usageCache;
+    })();
+    try { return await this.usageLoading; } finally { this.usageLoading = null; }
   }
   async turns(threadId) {
     await this.connect();
