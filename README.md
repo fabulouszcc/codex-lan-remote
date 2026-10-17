@@ -27,6 +27,20 @@
 
 ### 1. 安装电脑插件
 
+**交给 Codex 安装**：在 Windows 电脑上的 Codex 中新建聊天，复制发送下面这段话：
+
+```text
+请帮我在这台 Windows 电脑上安装 Codex LAN Remote「手机连接」插件：
+https://github.com/fabulouszcc/codex-lan-remote
+
+请从最新 Release 下载 Windows 插件 ZIP，完整解压到固定目录，运行 install-desktop-plugin.ps1 完成安装；如果已经安装，请升级并保留现有配置、证书和手机授权。
+安装完成后，在 Codex 右侧面板打开「手机连接设置」，并提供同一 Release 的 Android APK 下载链接，方便我在手机上安装和扫码配对。
+```
+
+如出现 Windows 授权提示，按提示确认即可。手机 APK 仍需在手机上安装。
+
+**手动安装**：
+
 从 [Releases](https://github.com/fabulouszcc/codex-lan-remote/releases) 下载 Windows 插件 ZIP，完整解压，在解压目录执行：
 
 ```powershell
