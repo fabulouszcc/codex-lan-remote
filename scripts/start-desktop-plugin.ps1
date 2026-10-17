@@ -11,6 +11,7 @@ if ($Administrator) {
         Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList ($taskArguments + '-Administrator')
         return
     }
+    & (Join-Path $PSScriptRoot 'configure-desktop-autostart.ps1') -DataDirectory $DataDirectory -Highest
     $taskEndpointPath = Join-Path $DataDirectory 'manager.local.json'
     if (Test-Path -LiteralPath $taskEndpointPath) {
         $taskEndpoint = Get-Content -LiteralPath $taskEndpointPath -Raw | ConvertFrom-Json
@@ -22,6 +23,27 @@ if ($Administrator) {
 }
 $env:CODEX_LAN_DATA_DIR = $DataDirectory
 if ($Administrator) {
+    $taskSavedConfig = Get-Content -LiteralPath (Join-Path $DataDirectory 'config.local.json') -Raw | ConvertFrom-Json
+    if ($taskSavedConfig.autoStart -eq $true) {
+        # Scheduler owns the elevated daemon, rather than a Codex child process.
+        & (Join-Path $PSScriptRoot 'configure-desktop-autostart.ps1') -DataDirectory $DataDirectory -StartOnly
+        $taskReady = $false
+        for ($taskAttempt = 0; $taskAttempt -lt 80; $taskAttempt++) {
+            if (Test-Path -LiteralPath $taskEndpointPath) {
+                try {
+                    $taskEndpoint = Get-Content -LiteralPath $taskEndpointPath -Raw | ConvertFrom-Json
+                    $taskStatus = Invoke-RestMethod ($taskEndpoint.origin + '/api/status') -Headers @{Authorization=('Bearer ' + $taskEndpoint.token)} -TimeoutSec 2
+                    $taskReady = $taskStatus.kind -eq 'codex-lan-manager'
+                } catch { }
+            }
+            if ($taskReady) { break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $taskReady) { throw 'Windows 后台任务未就绪，请重新打开设置检查启动状态' }
+        & (Join-Path $taskPlugin 'runtime\node.exe') (Join-Path $taskPlugin 'desktop\open.mjs')
+        if ($LASTEXITCODE -ne 0) { throw '后台已启动，但无法打开设置页面' }
+        return
+    }
     # Keep the elevated host alive for the lifetime of its daemon. Do not rely on
     # a short-lived URL opener to own a privileged background process on Windows.
     $taskDaemon = Start-Process -FilePath (Join-Path $taskPlugin 'runtime\node.exe') -ArgumentList @(('"' + (Join-Path $taskPlugin 'desktop\daemon.mjs') + '"'), '--data', ('"' + $DataDirectory + '"')) -WindowStyle Hidden -PassThru

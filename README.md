@@ -1,46 +1,110 @@
 # Codex LAN Remote
 
-用于 Android + EasyTier + Codex 桌面本地插件方案的接口验证和设计工作区。
+在 Android 手机上继续操作电脑里的 Codex：发送任务、查看进度、处理审批，离开电脑也能跟进工作。
 
-非官方开发预览项目。Windows x64 桌面插件与 Android ARM64 客户端配合使用，连接电脑上已经运行的 Codex 桌面端。
+项目由 **Android 客户端**和 **Windows「手机连接」插件**组成，支持局域网直连和 EasyTier 异地组网。
 
-当前版本为 Android 0.3.4 / 电脑插件 0.3.4：可从电脑实际可用列表选择模型和思考强度，聊天右侧增加记录定位栏，Codex 回复使用气泡，底部同步任务与思考状态。工具按每轮对话合并折叠，网络切换入口位于顶部连接状态；聊天使用可回收列表和按需加载工具详情。电脑提供桌面和开始菜单“手机连接设置”入口。已在真机验证并安装。详见 [界面升级与验收](docs/界面升级与验收.md)。
+[下载安装包](https://github.com/fabulouszcc/codex-lan-remote/releases) · [电脑端使用指南](docs/电脑端插件使用指南.md)
 
-[下载 0.3.4 Preview](https://github.com/fabulouszcc/codex-lan-remote/releases/tag/v0.3.4-preview)：[Windows 电脑插件 ZIP](https://github.com/fabulouszcc/codex-lan-remote/releases/download/v0.3.4-preview/codex-lan-desktop-0.3.4-preview.zip) 和 [Android ARM64 APK](https://github.com/fabulouszcc/codex-lan-remote/releases/download/v0.3.4-preview/codex-lan-0.3.4-preview.apk)。Android 源码位于 `android/`。电脑端解压后执行 `install-desktop-plugin.ps1`，详细步骤见下方使用指南。Android 安装后可选择局域网直连，或自行配置 EasyTier，再与电脑配对。安装包不携带开发者的组网配置、配对授权、证书或聊天记录，SHA-256 位于 Release 介绍中。
+## 解决什么问题
 
-当前交付包括桌面 IPC 适配器、HTTPS 配对与连接服务、控制流程测试驱动、ARM64 Android 预览 APK，以及可安装的 Windows 电脑端“手机连接”插件。
+- **离开电脑后，任务进度难以跟进**：手机同步查看聊天、任务状态和工具活动，完成或需要审批时接收通知。
+- **需要回到电脑才能继续操作**：在手机发送或追加指令、中断当前任务、切换聊天，并选择电脑实际支持的模型和思考强度。
+- **手机与电脑不在同一网络**：通过内置 EasyTier 组网连接，也可以沿用自己已有的组网服务。
+- **连接与配对配置繁琐**：电脑提供统一设置页，手机扫码配对；使用内置 EasyTier 时可同时导入入网参数，由 DHCP 自动分配手机地址。
 
-Android 与电脑插件当前均为 0.3.4-preview。已在小米 14 Ultra 验证聊天同步、停止、模型设置与记录定位；此前版本验证过完成/审批横幅和取消审批，开启勿扰时可能仅出现在通知列表。电脑支持已有网络/内置 EasyTier 配置、加密保存密钥、配对码与二维码、授权撤销、连接状态及后台管理。
+## 使用条件
 
-- [本机接口验证与限制](docs/接口验证.md)
-- [电脑端插件安装与使用](docs/电脑端插件使用指南.md)
-- [电脑端插件实现与验收](docs/电脑端插件实现与验收.md)
-- [已有网络 / 内置 EasyTier 与配置入口设计](docs/插件设计.md)
-- [桌面实时接入：1 份快照、29 批连续增量](docs/桌面实时接入验证.md)
-- [完整控制流程实测与进程停止限制](docs/完整控制流程验证.md)
-- [小米 14 Ultra 安装、组网与配对指南](docs/手机测试指南.md)
-- [Moonlight V+ 内置 EasyTier 源码核查](docs/Moonlight内置EasyTier参考.md)
-- [0.2 升级、修复原因与验证](docs/0.2升级与验证.md)
-- `server/desktop-ipc.mjs`：连接现有桌面的内部协调管道，发现持有者、读取设置、订阅状态。
-- `scripts/verify-desktop-ipc.mjs`：实测现有桌面的状态订阅，不创建第二个 app-server。
-- `scripts/verify-interfaces.mjs`：初始化、历史、可选恢复、Schema 和 EasyTier 状态探测。
-- `scripts/verify-shared-runtime.mjs`：双客户端与临时 app-server 实验。
+| 设备 | 要求 |
+| --- | --- |
+| 电脑 | Windows x64，已安装 Codex 桌面端 |
+| 手机 | Android 9 或更新版本，ARM64 |
+| 网络 | 同一局域网，或通过 EasyTier 等方式互通 |
 
-连接服务使用 Node.js 24，无 npm 运行依赖。TLS 测试需要 JDK keytool；Android 构建需要 JDK 17、Gradle 8.9、SDK 35 和两个固定校验值的 EasyTier 原生库，见手机测试指南。机器相关输出和生成的协议文件放入 `.local/`，不会提交到版本库。`.Codex/` 按用户项目约定保留；其中 settings.json 当前为空，不代表已经注册了 Codex 插件。
+远控聊天时，电脑需要保持开机，Codex 桌面端需要运行，并允许手机访问对应聊天。
+
+## 安装与连接
+
+### 1. 安装电脑插件
+
+从 [Releases](https://github.com/fabulouszcc/codex-lan-remote/releases) 下载 Windows 插件 ZIP，完整解压，在解压目录执行：
 
 ```powershell
-npm test
-npm run verify:desktop -- --thread <桌面聊天ID> --duration-ms 20000
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-desktop-plugin.ps1
 ```
 
-HTTPS 验证脚本需要先在本机设置 `CODEX_LAN_TEST_THREAD`；控制回归还需要 `CODEX_LAN_TEST_WORKSPACE`。历史切换验证需要 `CODEX_LAN_SECOND_TEST_THREAD`。这些值只使用自己明确授权的专用测试聊天，实际调用可能消耗模型额度。不要提交本机环境变量、`.local/`、证书、密钥或 EasyTier 配置。
+首次安装需要联网补齐依赖。升级时运行新版安装器即可，已有连接配置、证书和手机授权会保留。请保留解压目录。
 
-IPC 适配器目前针对 Windows 桌面 `26.1007.9446.0` 中观察到的内部协议，默认只读，写操作需要明确限定聊天。18 项 Node 自动化测试通过；提交、继续、排队、steer、会话打断、真实命令/文件审批、客户端重连及记录落盘已实测。HTTPS 配对、发送、流式结果、重试去重与撤销授权的 9 项本机联调检查通过；Android 配置校验的独立 Java 检查通过。
+安装完成后，通过以下任一入口打开设置：
 
-0.2 增量验证：22 项 Node 测试、7 项 Android 状态层 JUnit 测试通过；HTTPS 控制回归 12 项、无模型消息的多聊天历史验证 7 项通过。新 APK 和 0.1 签名一致，可覆盖安装。
+- 在 Codex 中启用「手机连接」插件，选择「打开手机连接设置」，在右侧面板管理连接。
+- 打开桌面或开始菜单中的「手机连接设置」。
 
-电脑端当前通过 29 项 Node 测试、安装后 MCP/页面检查和真实 HTTPS 收发回归；Windows 新建证书与 Node TLS、EasyTier 固定版本配置检查通过。原电脑证书和手机授权已迁移到插件数据目录，当前手机连接由插件后台管理。
+### 2. 选择连接方式
 
-重要限制：会话打断没有保证停止底层命令。内置 EasyTier 创建虚拟网卡和与用户网络互联仍需填写参数并按需确认 UAC 后验收；长期锁屏、自动发现和工具清单同步未全部验证。此本地预览包未上架公开插件目录。
+| 连接方式 | 适用场景 | 配置方法 |
+| --- | --- | --- |
+| 局域网直连 | 手机和电脑连接同一路由器 | 选择「局域网 / 已有网络」，选中电脑的 Wi-Fi 或以太网地址 |
+| 已有组网 | 已使用 EasyTier 或其他组网工具 | 手机先加入对应网络，再在「局域网 / 已有网络」中选择电脑的虚拟网卡地址 |
+| 内置 EasyTier | 希望由插件和手机 App 管理组网 | 选择「内置 EasyTier」，填写网络名称、密钥、电脑虚拟 IPv4/前缀及组网节点 |
 
+点击「保存并启用」。内置 EasyTier 创建虚拟网卡时，如需管理员权限，使用设置页的「请求管理员启动」，并确认 Windows 提示。
 
+插件只管理自己启动的 EasyTier 实例，已有系统组网服务由你原来的工具管理。
+
+### 3. 安装手机 App 并扫码配对
+
+1. 从同一 Release 下载 Android APK 并安装。
+2. 在电脑设置页生成配对二维码。
+3. 手机首次打开 App，点击「扫码添加电脑」，扫描二维码；也支持从图片识别或粘贴完整配对信息。
+4. 确认配对。使用内置 EasyTier 时，确认导入网络参数并允许 Android VPN 授权，手机自动获取虚拟地址后连接电脑。
+5. 连接成功后选择聊天，即可查看记录、发送任务和处理审批。
+
+已有组网模式只完成远控配对，不会导入或接管外部组网配置。
+
+### 4. 日常使用
+
+- 在手机顶部切换连接方式，在设置中修改 EasyTier 参数。
+- 通过模型菜单调整电脑支持的模型和思考强度，通过右侧记录栏快速定位聊天内容。
+- 为 App 开启通知权限；如需顶部横幅，在系统设置中开启悬浮通知，勿扰模式会影响提醒。
+- 在电脑设置中开启「保持后台运行，登录 Windows 时自动恢复」，让连接后台独立运行，重启 Codex 后仍可使用。
+- 不再使用的手机可在电脑设置中撤销授权。
+
+配对二维码包含连接凭据，内置 EasyTier 二维码还包含组网密钥，请只向自己的手机展示。
+
+## 从源码编译
+
+安装包以 Releases 标注的版本为准；需要源码中的最新功能时，可自行构建。
+
+### Windows 插件
+
+需要 Windows、Node.js 24 和 npm。打包脚本会下载并校验固定版本的依赖。
+
+```powershell
+npm ci
+npm test
+.\scripts\build-desktop-plugin.ps1
+```
+
+生成的插件目录和 ZIP 位于 `.local/releases/`。解压后的安装方式与上文一致。
+
+### Android App
+
+需要 JDK 17、Gradle 8.9 和 Android SDK 35。可指定已安装的工具路径：
+
+```powershell
+.\scripts\build-android.ps1 `
+  -SdkPath "C:\Android\Sdk" `
+  -JavaPath "C:\Java\jdk-17" `
+  -GradlePath "C:\Gradle\gradle-8.9\bin\gradle.bat"
+```
+
+脚本会准备固定版本的 EasyTier 原生库、运行状态层测试，并将 APK 输出到 `.local/releases/`。自行构建使用本机签名；覆盖安装旧版需要使用同一签名。
+
+本机配置、签名文件、证书、组网密钥及构建产物均不应提交到仓库。
+
+## 说明
+
+这是非官方预览项目，使用 Codex 桌面内部接口，桌面升级可能影响兼容性。中断聊天不保证终止已经启动的底层命令。
+
+第三方组件保留各自许可证，来源和许可随安装包提供。

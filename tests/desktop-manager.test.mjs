@@ -10,6 +10,19 @@ import { ConfigStore, validateConfig, assertNoSubnetConflict, dpapi, addresses }
 import { EasyTierManager } from '../desktop/easytier.mjs';
 const assets = new URL('../desktop/web/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
+test('saving auto-start synchronizes only the explicitly configured manager integration', async t => {
+  const root=await mkdtemp(join(tmpdir(),'codex-lan-auto-save-'));let saved=null;const calls=[];
+  const runtime={status:()=>({running:false}),stop:async()=>{}};
+  const easytier={status:()=>({owned:false}),stop:async()=>{}};
+  const store={load:async()=>saved,public:async()=>saved,save:async value=>{saved=value;return value;}};
+  const manager=await createManager({root,assets:decodeURIComponent(assets),port:0,runtime,easytier,store,syncAutoStart:async path=>{assert.equal(path,root);calls.push(saved.autoStart);}});t.after(()=>manager.close());
+  for(const autoStart of [true,false]) {
+    const response=await fetch(new URL('/api/config',manager.url),{method:'POST',headers:{authorization:'Bearer '+manager.token,'content-type':'application/json'},body:JSON.stringify({autoStart})});
+    assert.equal(response.status,200);
+  }
+  assert.deepEqual(calls,[true,false]);
+});
+
 test('automatic start failures remain visible in bounded manager events', async t => {
   const host=addresses()[0]?.address;if(!host)return;
   const root=await mkdtemp(join(tmpdir(),'codex-lan-start-error-')),saved={mode:'existing',host,port:9443,allowSelectedChats:true};

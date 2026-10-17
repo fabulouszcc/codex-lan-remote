@@ -54,5 +54,6 @@ $taskInstalledJson | Write-Output
 $taskInstalled = $taskInstalledJson | ConvertFrom-Json
 & (Join-Path $taskInstalled.installedPath 'scripts\prepare-desktop-native.ps1') -PluginDirectory $taskInstalled.installedPath
 & (Join-Path $taskInstalled.installedPath 'scripts\install-settings-shortcuts.ps1') -PluginDirectory $taskInstalled.installedPath -DataDirectory $DataDirectory
+& (Join-Path $taskInstalled.installedPath 'scripts\configure-desktop-autostart.ps1') -DataDirectory $DataDirectory -Start
 Write-Output '手机连接插件已安装。当前聊天可能需要刷新插件或在新的聊天中加载工具；无需重装 Android App。'
 Write-Output ('插件数据目录：' + $DataDirectory)

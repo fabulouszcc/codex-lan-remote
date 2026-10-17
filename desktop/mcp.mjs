@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { ensureManager, adminCall } from './client.mjs';
+import { ensureManager, adminCall, restoreAutoStart } from './client.mjs';
 const tools = [
   { name: 'open_phone_settings', description: '打开手机连接插件设置入口。返回本机设置页面链接，可在 Codex 浏览器面板显示；含已有网络、内置 EasyTier、配对和设备授权管理。', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
   { name: 'phone_connection_status', description: '查看手机远控服务、桌面聊天就绪状态及本插件管理的 EasyTier 状态。不返回组网密钥或配对码。', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true } },
@@ -7,6 +7,7 @@ const tools = [
   { name: 'stop_phone_connection', description: '停止本插件手机连接服务及其拥有的 EasyTier。手机会断开；已有系统组网不受影响。仅在用户要求停止时调用。', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: true } },
 ];
 const send = value => process.stdout.write(JSON.stringify(value) + '\n');
+let initialized = false;
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
   let message;
@@ -14,7 +15,14 @@ for await (const line of lines) {
     if (line.length > 1024 * 1024) throw Error('请求过大'); message = JSON.parse(line);
     if (message.id === undefined) continue;
     let result;
-    if (message.method === 'initialize') result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.4.6' } };
+    if (message.method === 'initialize') {
+      result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'codex-lan-desktop', version: '0.4.15-preview' } };
+      if (!initialized) {
+        initialized = true;
+        // Keep the MCP handshake responsive while the saved network comes up.
+        void restoreAutoStart().catch(() => console.error('手机连接自动恢复失败，请在设置中检查后台状态；配置未改动。'));
+      }
+    }
     else if (message.method === 'ping') result = {};
     else if (message.method === 'tools/list') result = { tools };
     else if (message.method === 'tools/call') {

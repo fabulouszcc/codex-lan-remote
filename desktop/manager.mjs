@@ -10,10 +10,10 @@ import { EasyTierManager } from './easytier.mjs';
 import { pairingInfo } from './pairing.mjs';
 const fail = (status, message) => Object.assign(Error(message), { status });
 const safeEqual = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {} }) {
+export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {}, syncAutoStart = async () => {} }) {
   let mutation = Promise.resolve(); const events = [];
   const record = message => { events.push({ at: new Date().toISOString(), message }); if (events.length > 50) events.shift(); };
-  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.13-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
+  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.15-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), events });
   const startConfigured = async () => {
     const saved = await store.load(); if (!saved) throw Error('请先保存连接配置');
     const config = { ...validateConfig(saved), secretCipher: saved.secretCipher };
@@ -61,7 +61,7 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
       let input; try { input = JSON.parse(Buffer.concat(chunks)); } catch { throw fail(400, '配置格式无效'); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail(400, '配置格式无效');
       const operation = mutation.catch(() => {}).then(async () => {
-        if (url.pathname === '/api/config') { const value = await store.save(input); record('连接配置已保存，点击应用并启动后生效'); return value; }
+        if (url.pathname === '/api/config') { const value = await store.save(input); await syncAutoStart(root); record('连接配置已保存，点击应用并启动后生效'); return value; }
         if (url.pathname === '/api/start') return start();
         if (url.pathname === '/api/stop') { await runtime.stop(); await easytier.stop(); record('手机连接服务已停止'); return status(); }
         if (url.pathname === '/api/pairing') {
@@ -71,6 +71,7 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
             // Reject invalid mobile network settings before writing config or changing a live connection.
             await pairingInfo({ address:`https://${draft.host}:${draft.port}`, fingerprint:'0'.repeat(64), code:'preflight', expiresAt:new Date(Date.now()+600000).toISOString() }, draft, input);
             await store.save(input.config);
+            await syncAutoStart(root);
             await start();
           }
           if (!runtime.active) throw Error('请先启动手机连接服务');
