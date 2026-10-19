@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
+import {pendingQuestions} from '../server/user-questions.mjs';
 
 class Client extends EventEmitter {
   initialized = true;
@@ -17,6 +18,31 @@ class Client extends EventEmitter {
   async loadHistory(id) { this.historyRequests.push(id); }
 }
 const stored = [{ id: 'saved-turn', status: 'completed', input: 'old question', agentMessages: ['old answer'], toolResults: [] }];
+
+test('desktop-completed input and requests from older turns never leave pending reply cards',()=>{
+  const request={id:8,method:'tool/requestUserInput',params:{turnId:'active',questions:[{id:'answer',question:'Choose'}]}};
+  const state={turns:[{turnId:'old',status:'inProgress',items:[{type:'agentMessage',id:'old-question',questions:[{title:'Historical'}]}]},{turnId:'active',status:'inProgress',items:[{type:'userInputResponse',requestId:8,completed:true}]}],requests:[request]};
+  assert.deepEqual(pendingQuestions(state),[]);
+  state.turns[1].items=[];assert.equal(pendingQuestions(state).length,1);
+  request.params.turnId='old';assert.deepEqual(pendingQuestions(state),[]);
+  state.turns.forEach(turn=>turn.status='interrupted');assert.deepEqual(pendingQuestions(state),[]);
+});
+
+test('one chat revision gap repairs only that subscription while another chat stays writable', async t => {
+  const {bridge,client}=fixture([{id:'busy'},{id:'idle'}]);t.after(()=>bridge.close());await bridge.connect();
+  let reconnects=0,started;client.connect=async()=>{reconnects++;};client.startTurn=async(id,text)=>{started={id,text};};
+  client.emit('threadState',{conversationId:'busy',change:{type:'patches',baseRevision:999,revision:1000,patches:[]}});
+  assert.equal(bridge.snapshot().find(row=>row.id==='idle').ready,true);
+  await bridge.command('idle',{op:'start',text:'independent task'});assert.deepEqual(started,{id:'idle',text:'independent task'});
+  await new Promise(resolve=>setTimeout(resolve,20));assert.equal(reconnects,0);assert.equal(bridge.snapshot().find(row=>row.id==='busy').ready,true);
+});
+
+test('slow model discovery does not delay fetching the live complete history', async t => {
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let release;
+  client.readModelSettings=()=>new Promise(resolve=>{release=resolve;});
+  const connecting=bridge.connect();await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(client.historyRequests,['active']);assert.equal(bridge.snapshot()[0].ready,true);release({});await connecting;
+});
 test('late hydration with a different history window retains canonical live order before trimming',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
   const turns=Array.from({length:51},(_,i)=>({turnId:'turn-'+i,status:'completed',items:[{type:'userMessage',id:'u'+i,content:[{type:'text',text:'message-'+i}]}]}));

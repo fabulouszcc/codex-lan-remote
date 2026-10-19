@@ -8,6 +8,7 @@ import { ConfigStore, addresses, validateConfig } from './config.mjs';
 import { GatewayRuntime } from './runtime.mjs';
 import { EasyTierManager } from './easytier.mjs';
 import { pairingInfo } from './pairing.mjs';
+import { desktopVersion } from './version.mjs';
 const fail = (status, message) => Object.assign(Error(message), { status });
 const safeEqual = (a, b) => typeof a === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export async function createManager({ root, assets, binDir, port = 19547, runtime = new GatewayRuntime(root), easytier = new EasyTierManager(binDir, { dataDir: join(root, 'easytier') }), store = new ConfigStore(root), token = randomBytes(32).toString('hex'), onShutdown = () => {}, syncAutoStart = async () => {}, restoreDelays = [1000, 3000, 10000, 30000] }) {
@@ -17,7 +18,7 @@ export async function createManager({ root, assets, binDir, port = 19547, runtim
   const cancelRestore = () => { ++restoreGeneration; clearTimeout(restoreTimer); restoreTimer = null; recovery = { state: 'idle', attempts: 0, nextRetryAt: null }; };
   const enqueue = operation => { const pending = mutation.catch(() => {}).then(operation); mutation = pending; return pending; };
   const record = message => { events.push({ at: new Date().toISOString(), message }); if (events.length > 50) events.shift(); };
-  const status = async () => ({ kind: 'codex-lan-manager', version: '0.4.16-preview', config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), recovery: { ...recovery }, events });
+  const status = async () => ({ kind: 'codex-lan-manager', version: desktopVersion, config: await store.public(), addresses: addresses(), gateway: runtime.status(), easytier: easytier.status(), recovery: { ...recovery }, events });
   const startConfigured = async () => {
     const saved = await store.load(); if (!saved) throw Error('请先保存连接配置');
     const config = { ...validateConfig(saved), secretCipher: saved.secretCipher };

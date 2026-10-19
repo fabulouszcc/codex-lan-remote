@@ -192,7 +192,7 @@ export class DesktopIpcClient extends EventEmitter {
     const owner = this.#subscriptions.get(conversationId);
     if (!owner || hostId !== 'local' || message.sourceClientId !== owner) return;
     if (message.version !== PROTOCOL_VERSIONS[message.method]) {
-      this.emit('protocolMismatch', { method: message.method, version: message.version });
+      this.emit('protocolMismatch', { method: message.method, version: message.version, conversationId });
       return;
     }
     if (change?.type !== 'snapshot' && change?.type !== 'patches') return;

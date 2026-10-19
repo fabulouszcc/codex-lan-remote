@@ -30,16 +30,17 @@ export class DesktopBridge extends EventEmitter {
       const entry = this.entries.get(conversationId);
       if (!entry) return;
       try { entry.store.apply(change); entry.ready = true; this.emit('changed'); }
-      catch { entry.ready = false; this.emit('changed'); this.scheduleReconnect(); }
+      catch { this.repairEntry(entry, generation); }
     });
     client.on('disconnected', () => {
       if (generation !== this.generation || this.closed) return;
       for (const entry of this.entries.values()) entry.ready = false;
       this.emit('changed'); this.scheduleReconnect();
     });
-    client.on('protocolMismatch', () => {
-      for (const entry of this.entries.values()) entry.ready = false;
-      this.emit('changed'); this.scheduleReconnect();
+    client.on('protocolMismatch', ({ conversationId } = {}) => {
+      if(generation!==this.generation||this.closed)return;
+      const entry=this.entries.get(conversationId);
+      if(entry)this.repairEntry(entry,generation);
     });
     try {
       await client.connect();
@@ -74,6 +75,7 @@ export class DesktopBridge extends EventEmitter {
   async hydrate(entry, generation) {
     if (this.closed || entry.loadingGeneration === generation) return;
     entry.loadingGeneration = generation;
+    entry.repairPending = false;
     const persisted = async () => {
       if (!this.historyReader || entry.historyReady) return;
       try {
@@ -88,23 +90,35 @@ export class DesktopBridge extends EventEmitter {
         const owner = await client.discoverOwner(entry.id);
         if (generation !== this.generation) return;
         entry.owner = owner;
+        if(entry.resubscribe){client.unfollowThread?.(entry.id);entry.resubscribe=false;}
         await client.followThread(entry.id, owner);
-        if(client.readModelSettings)try{entry.modelSettings=await client.readModelSettings(entry.id,owner);}catch{/* Model discovery must not prevent history synchronization. */}
-        await client.loadHistory(entry.id, owner);
-        if (generation === this.generation) { entry.historyReady = true; this.emit('changed'); }
+        const [history]=await Promise.allSettled([
+          client.loadHistory(entry.id, owner),
+          client.readModelSettings ? client.readModelSettings(entry.id,owner).then(value=>{if(generation===this.generation)entry.modelSettings=value;}) : Promise.resolve(),
+        ]);
+        if (generation === this.generation) { if(history.status==='fulfilled')entry.historyReady = true; this.emit('changed'); }
       } catch { /* Stored history remains viewable without a live desktop owner. */ }
     };
     try { await Promise.allSettled([persisted(), live()]); }
-    finally { if (entry.loadingGeneration === generation) entry.loadingGeneration = null; }
+    finally {
+      if(entry.loadingGeneration===generation)entry.loadingGeneration=null;
+      if(entry.repairPending&&!this.closed&&generation===this.generation){entry.repairTimer=setTimeout(()=>void this.hydrate(entry,generation),250);entry.repairTimer.unref();}
+    }
+  }
+  repairEntry(entry,generation){
+    entry.ready=false;entry.resubscribe=true;entry.repairPending=true;this.emit('changed');
+    if(entry.loadingGeneration!==generation)void this.hydrate(entry,generation);
   }
   scheduleReconnect() {
     if (this.closed || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.connect(); }, 3000);
     this.reconnectTimer.unref();
   }
+  fileRoot(threadId) { return this.entries.get(threadId)?.store.state?.cwd; }
   snapshot() {
     return [...this.entries.values()].map(entry => {
       const state = entry.store.state;
+      const liveTurn=entry.ready?getTurns(state).findLast(turn=>turn.status==='inProgress'):null;
       const summary = summarizeThread(state);
       const turns = new Map((entry.history || []).map(turn => [turn.id, turn]));
       for (const turn of summary.turns) {
@@ -131,12 +145,14 @@ export class DesktopBridge extends EventEmitter {
         revision: entry.store.revision, runtimeStatus: summary.runtimeStatus || 'unavailable',
         turns: [...turns.values()].slice(-50),
         questions: entry.ready ? pendingQuestions(state).map(q => ({ ...q, submitting: entry.consumed.has(JSON.stringify(['question', q.turnId, q.id])) })) : [],
-        approvals: (entry.ready ? state?.requests || [] : []).flatMap(request => {
+        approvals: (liveTurn ? state?.requests || [] : []).flatMap(request => {
           const type = String(request.type || request.method || '');
           const kind = /command/i.test(type) ? 'command' : /file/i.test(type) ? 'file' : null;
           if (!kind) return [];
           const id = request.id ?? request.requestId;
           const params = request.params || {};
+          if(params.turnId&&params.turnId!==liveTurn.turnId)return [];
+          if(params.itemId&&!(liveTurn.items||[]).some(item=>item.id===params.itemId))return [];
           const items = getTurns(state).flatMap(turn => turn.items || []);
           const item = items.find(item => item.id === params.itemId);
           return [{ id, kind, turnId: getTurns(state).at(-1)?.turnId, decisions: (params.availableDecisions || ['accept', 'cancel']).filter(value => ['accept', 'decline', 'cancel'].includes(value)),
@@ -217,5 +233,5 @@ export class DesktopBridge extends EventEmitter {
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
     return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
   }
-  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer); this.client?.close(); this.historyReader?.close(); }
+  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close(); }
 }

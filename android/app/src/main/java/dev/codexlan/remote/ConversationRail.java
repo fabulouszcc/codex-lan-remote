@@ -79,6 +79,7 @@ final class ConversationRail extends View {
             float reading=Math.max(0,1-Math.abs(i-drawnFocus))*(1-highlight);
             half=Math.max(half,dp(3.4f+5.6f*reading));shade=Math.max(shade,(int)(76+117*reading));
             if(tracking&&i==active){half=Math.max(half,dp(5));shade=Math.max(shade,130);}
+            if(!UiPalette.of(getContext()).dark)shade=255-shade;
             paint.setColor(Color.rgb(shade,shade,shade));paint.setStrokeWidth(dp(1.2f+.6f*focus));
             float y=top()+(i-drawnStart)*spacing();canvas.drawLine(getWidth()/2f-half,y,getWidth()/2f+half,y,paint);
         }

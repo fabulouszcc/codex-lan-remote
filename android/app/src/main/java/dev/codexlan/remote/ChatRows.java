@@ -19,7 +19,18 @@ final class ChatRows {
         }
         return changed?text:value;
     }
-    static String userText(String value){String text=stripAmbient(value);return text.isEmpty()?"已同步页面上下文":displayText(text);}
+    static String userText(String value){
+        String text=stripAmbient(value),wrapper=text.trim();
+        if(wrapper.startsWith("# Files mentioned by the user:")||wrapper.startsWith("# Files pasted by the user:")){
+            text=wrapper;
+            java.util.regex.Matcher request=java.util.regex.Pattern.compile("(?m)^## My request:\\s*").matcher(text);
+            if(request.find())text=text.substring(request.end()).trim();
+            else text="";
+            text=text.replaceAll("<image\\b[^>]*>\\s*(?:</image>)?","").trim();
+            return text.isEmpty()?"附件":displayText(text);
+        }
+        return text.isEmpty()?"已同步页面上下文":displayText(text);
+    }
     static String displayText(String value){
         String trimmed=value.trim();
         if(!trimmed.startsWith("<send_user_message_question_reply>")||!trimmed.endsWith("</send_user_message_question_reply>"))return value;
@@ -57,6 +68,7 @@ final class ChatRows {
             JSONObject turn=turns.getJSONObject(i);
             String prefix=chat+":"+turn.optString("id","turn-"+i)+":";
             JSONArray timeline=MobileState.timeline(turn), tools=new JSONArray();
+            int lastMessage=-1;for(int j=0;j<timeline.length();j++)if("message".equals(timeline.getJSONObject(j).optString("type")))lastMessage=j;
             for(int j=0;j<timeline.length();j++) if("tool".equals(timeline.getJSONObject(j).optString("type"))) tools.put(timeline.getJSONObject(j));
             boolean grouped=false;
             for(int j=0;j<timeline.length();j++) {
@@ -64,8 +76,11 @@ final class ChatRows {
                 if("tool".equals(type)) {
                     if(!grouped)rows.add(new Row(prefix+"tools","tools",new JSONObject().put("items",tools)));
                     grouped=true;
-                } else if(("user".equals(type)||"message".equals(type))&&!item.optString("text").isEmpty()) {
-                    rows.add(new Row(prefix+item.optString("id","item-"+j),type,item));
+                } else if(("user".equals(type)||"message".equals(type))&&(!item.optString("text").isEmpty()||item.optJSONArray("files")!=null&&item.optJSONArray("files").length()>0)) {
+                    JSONObject display=item;
+                    boolean finalFiles="completed".equals(turn.optString("status"))&&("final_answer".equals(item.optString("phase"))||j==lastMessage&&!"commentary".equals(item.optString("phase")));
+                    if("message".equals(type)&&!finalFiles){display=new JSONObject();java.util.Iterator<String> keys=item.keys();while(keys.hasNext()){String key=keys.next();if(!"files".equals(key))display.put(key,item.get(key));}}
+                    rows.add(new Row(prefix+item.optString("id","item-"+j),type,display));
                 }
             }
         }
@@ -73,7 +88,7 @@ final class ChatRows {
         if(thread.optBoolean("ready")&&!thread.optString("activeTurnId").isEmpty())rows.add(new Row(chat+":activity","activity",activity==null?new JSONObject().put("label","正在思考…"):activity));
         JSONArray approvals=thread.optJSONArray("approvals");
         JSONArray questions=thread.optJSONArray("questions");
-        if(thread.optBoolean("ready")&&questions!=null)for(int i=0;i<questions.length();i++)rows.add(new Row(chat+":question:"+questions.getJSONObject(i).optString("id"),"question",questions.getJSONObject(i)));
+        if(thread.optBoolean("ready")&&!MobileState.activeTurnId(thread).isEmpty()&&questions!=null)for(int i=0;i<questions.length();i++)rows.add(new Row(chat+":question:"+questions.getJSONObject(i).optString("id"),"question",questions.getJSONObject(i)));
         if(approvals!=null)for(int i=0;i<approvals.length();i++)rows.add(new Row(chat+":approval:"+approvals.getJSONObject(i).optString("id",String.valueOf(i)),"approval",approvals.getJSONObject(i)));
         return rows;
     }

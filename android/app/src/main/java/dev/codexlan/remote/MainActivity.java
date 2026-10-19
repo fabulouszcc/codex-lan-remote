@@ -16,7 +16,11 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newFixedThreadPool(3);
-    private final int background = Color.rgb(18, 18, 18), foreground = Color.rgb(242, 242, 242), muted = Color.rgb(157, 157, 157), accent = Color.rgb(220, 233, 225);
+    private final ChatFiles chatFiles=new ChatFiles(this);
+    private AppUpdates appUpdates;
+    private int background,foreground,muted,accent;
+    private UiPalette palette;
+    private int surface(int r,int g,int b){return UiPalette.color(this,Color.rgb(r,g,b));}
     private SecureSession storage;
     private RemoteApi api;
     private volatile int generation;
@@ -47,10 +51,14 @@ public final class MainActivity extends Activity {
     private TextView railPreviewTitle,railPreviewPrompt,railPreviewReply;
     private String railChat="",railPreviewContent="";
     private final java.util.Map<String,String> questionDrafts=new java.util.HashMap<>();
+    private final java.util.Map<String,String> secretQuestionDrafts=new java.util.HashMap<>();
     private final java.util.Set<String> expandedTools = new java.util.HashSet<>();
     private final java.util.Map<String, String> drafts = new java.util.HashMap<>();
     private JSONObject currentThread;
     private TranscriptListView scroll;
+    private InlineQuestionsView questionArea;
+    private LinearLayout questionContent;
+    private String questionSignature="",questionChat="";
     private ChatAdapter chatAdapter;
     private final ExecutorService renderWorker = Executors.newSingleThreadExecutor();
     private final android.os.Handler renderHandler = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -79,7 +87,21 @@ public final class MainActivity extends Activity {
             });
         }catch(Exception e){runOnUiThread(()->{renderGate.failed();if(isDestroyed())return;if(revision==renderRevision)toast("聊天显示失败："+error(e));else scheduleRows();});}});
     };
-    private boolean sending;
+    private final CommandTracker commands=new CommandTracker();
+    private final java.util.Map<String,RemoteApi> commandChannels=new java.util.HashMap<>();
+    private boolean isSending(){return commands.pending(selectedThreadId);}
+    private final Runnable themeClock=new Runnable(){public void run(){if(!visible)return;if(palette!=null&&new UiPalette(MainActivity.this).dark!=palette.dark){recreate();return;}renderHandler.postDelayed(this,60000);}};
+    private boolean restoreVpnPermission,networkRestoreAttempted;
+    private void restoreSavedNetwork(){
+        if(api==null||EasyTierVpnService.running||restoreVpnPermission||networkRestoreAttempted||!"easytier".equals(getPreferences(MODE_PRIVATE).getString("networkMode","lan")))return;
+        try{
+            if(new SecureSession(this,"easytier").load()==null)return;
+            networkRestoreAttempted=true;
+            android.content.Intent permission=android.net.VpnService.prepare(this);
+            if(permission==null)startForegroundService(new android.content.Intent(this,EasyTierVpnService.class));
+            else{restoreVpnPermission=true;startActivityForResult(permission,206);}
+        }catch(Exception ignored){toast("自动组网未启动，请在设置中检查 EasyTier");}
+    }
     private void scheduleRows(){if(!isDestroyed()&&currentThread!=null&&!renderHandler.hasCallbacks(prepareRows))renderHandler.post(prepareRows);}
     private int firstRowTop(){View first=scroll.getChildAt(0);return first==null?0:first.getTop();}
     private void deferRows(java.util.List<ChatRows.Row> rows){
@@ -108,7 +130,12 @@ public final class MainActivity extends Activity {
     };
 
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state); storage = new SecureSession(this);
+        palette=UiPalette.of(this);setTheme(palette.dark?R.style.AppTheme:R.style.AppThemeLight);
+        super.onCreate(state);background=palette.background;foreground=palette.foreground;muted=palette.muted;accent=palette.accent;
+        appUpdates=new AppUpdates(this,()->api);
+        getWindow().setStatusBarColor(background);getWindow().setNavigationBarColor(background);
+        getWindow().getDecorView().setSystemUiVisibility(palette.dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        storage = new SecureSession(this);
         try {
             JSONObject saved = storage.load();
             if (saved != null) api = new RemoteApi(saved.getString("address"), saved.getString("fingerprint"), saved.getString("token"));
@@ -120,7 +147,7 @@ public final class MainActivity extends Activity {
             if(ids != null && values != null) for(int i=0;i<Math.min(ids.size(),values.size());i++)drafts.put(ids.get(i),values.get(i));
         }
         if (api == null || state!=null&&state.getBoolean("connectionGuideVisible",false)&&!state.getBoolean("pairingInProgress",false)) connectionPage(); else chatPage();
-        if(state==null)showLaunchAnimation();
+        if(state==null){showLaunchAnimation();appUpdates.launch();}
     }
     private int dp(int value) { return (int) (getResources().getDisplayMetrics().density * value + .5f); }
     private LinearLayout vertical() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); return layout; }
@@ -140,7 +167,7 @@ public final class MainActivity extends Activity {
     }
     private EditText field(String hint) {
         EditText input = new EditText(this); input.setHint(hint); input.setTextColor(foreground); input.setHintTextColor(muted); input.setTextSize(15); input.setSingleLine(true);
-        input.setPadding(dp(10), dp(12), dp(10), dp(12)); input.setBackgroundColor(Color.rgb(38, 42, 45));
+        input.setPadding(dp(10), dp(12), dp(10), dp(12)); input.setBackgroundColor(surface(38, 42, 45));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.topMargin = dp(8); input.setLayoutParams(params);
         input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO); return input;
     }
@@ -167,23 +194,23 @@ public final class MainActivity extends Activity {
         connectionGuideVisible=true;
         base("连接你的电脑", "扫码配对，从手机继续电脑上的工作");
         ScrollView formScroll=new ScrollView(this);formScroll.setFillViewport(true);LinearLayout form=vertical();formScroll.addView(form);root.addView(formScroll,new LinearLayout.LayoutParams(-1,0,1));
-        pairingProgressCard=vertical();pairingProgressCard.setPadding(dp(18),dp(14),dp(18),dp(18));pairingProgressCard.setBackground(rounded(Color.rgb(31,39,35),20));form.addView(pairingProgressCard);pairingProgressCard.setVisibility(View.GONE);
+        pairingProgressCard=vertical();pairingProgressCard.setPadding(dp(18),dp(14),dp(18),dp(18));pairingProgressCard.setBackground(rounded(surface(31,39,35),20));form.addView(pairingProgressCard);pairingProgressCard.setVisibility(View.GONE);
         pairingProgressText=text("正在完成配对…",15,accent);pairingProgressCard.addView(pairingProgressText);pairingSpinner=new ProgressBar(this);pairingProgressCard.addView(pairingSpinner,new LinearLayout.LayoutParams(dp(28),dp(28)));
         pairingContinue=button("继续配对");pairingProgressCard.addView(pairingContinue);pairingContinue.setOnClickListener(v->continuePendingPairing());
-        pairingRescan=button("重新扫码");pairingRescan.setBackground(rounded(Color.rgb(46,46,46),16));pairingRescan.setTextColor(foreground);pairingProgressCard.addView(pairingRescan);pairingRescan.setOnClickListener(v->{PairingCoordinator.discard(this);refreshPairingUi();startActivityForResult(new android.content.Intent(this,PairingScanActivity.class),204);});
-        LinearLayout guide=vertical();guide.setPadding(dp(18),dp(16),dp(18),dp(16));guide.setBackground(rounded(Color.rgb(28,28,28),22));
+        pairingRescan=button("重新扫码");pairingRescan.setBackground(rounded(surface(46,46,46),16));pairingRescan.setTextColor(foreground);pairingProgressCard.addView(pairingRescan);pairingRescan.setOnClickListener(v->{PairingCoordinator.discard(this);refreshPairingUi();startActivityForResult(new android.content.Intent(this,PairingScanActivity.class),204);});
+        LinearLayout guide=vertical();guide.setPadding(dp(18),dp(16),dp(18),dp(16));guide.setBackground(rounded(surface(28,28,28),22));
         guide.addView(text("让工作接着进行",21,foreground));guide.addView(text("在电脑 Codex 中打开「手机连接」设置，启动连接服务并生成配对二维码。",14,muted));LinearLayout.LayoutParams guideSpace=new LinearLayout.LayoutParams(-1,-2);guideSpace.topMargin=dp(16);guideSpace.bottomMargin=dp(14);form.addView(guide,guideSpace);
-        LinearLayout network=vertical();network.setPadding(dp(16),dp(8),dp(16),dp(12));network.setBackground(rounded(Color.rgb(28,28,28),20));network.addView(text("连接方式",12,muted));
+        LinearLayout network=vertical();network.setPadding(dp(16),dp(8),dp(16),dp(12));network.setBackground(rounded(surface(28,28,28),20));network.addView(text("连接方式",12,muted));
         RadioGroup modes=new RadioGroup(this);modes.setOrientation(LinearLayout.HORIZONTAL);RadioButton lan=new RadioButton(this),et=new RadioButton(this);lan.setText("局域网直连");et.setText("EasyTier 网络");lan.setTextSize(14);et.setTextSize(14);lan.setTextColor(foreground);et.setTextColor(foreground);lan.setId(View.generateViewId());et.setId(View.generateViewId());modes.addView(lan,new LinearLayout.LayoutParams(0,dp(46),1));modes.addView(et,new LinearLayout.LayoutParams(0,dp(46),1));network.addView(modes);
-        TextView networkHint=text("",12,muted);network.addView(networkHint);Button easytier=button("设置 EasyTier 组网");easytier.setBackground(rounded(Color.rgb(46,46,46),14));easytier.setTextColor(foreground);network.addView(easytier);easytier.setOnClickListener(v->easyTierDialog());form.addView(network);
-        LinearLayout card=vertical();card.setPadding(dp(16),dp(12),dp(16),dp(16));card.setBackground(rounded(Color.rgb(28,28,28),22));LinearLayout.LayoutParams cardSpace=new LinearLayout.LayoutParams(-1,-2);cardSpace.topMargin=dp(14);form.addView(card,cardSpace);card.addView(text("添加电脑",16,foreground));
+        TextView networkHint=text("",12,muted);network.addView(networkHint);Button easytier=button("设置 EasyTier 组网");easytier.setBackground(rounded(surface(46,46,46),14));easytier.setTextColor(foreground);network.addView(easytier);easytier.setOnClickListener(v->easyTierDialog());form.addView(network);
+        LinearLayout card=vertical();card.setPadding(dp(16),dp(12),dp(16),dp(16));card.setBackground(rounded(surface(28,28,28),22));LinearLayout.LayoutParams cardSpace=new LinearLayout.LayoutParams(-1,-2);cardSpace.topMargin=dp(14);form.addView(card,cardSpace);card.addView(text("添加电脑",16,foreground));
         Button scan=button("扫码添加电脑");UiIcon scanIcon=new UiIcon("scan",background);scanIcon.setBounds(0,0,dp(20),dp(20));android.text.SpannableString scanLabel=new android.text.SpannableString("\uFFFC  扫码添加电脑");scanLabel.setSpan(new android.text.style.ImageSpan(scanIcon,android.text.style.DynamicDrawableSpan.ALIGN_BOTTOM),0,1,android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);scan.setText(scanLabel);scan.setGravity(android.view.Gravity.CENTER);scan.setContentDescription("扫码添加电脑");card.addView(scan);scan.setOnClickListener(v->startActivityForResult(new android.content.Intent(this,PairingScanActivity.class),204));
-        Button paste=button("粘贴配对信息");paste.setBackground(rounded(Color.rgb(46,46,46),16));paste.setTextColor(foreground);card.addView(paste);
+        Button paste=button("粘贴配对信息");paste.setBackground(rounded(surface(46,46,46),16));paste.setTextColor(foreground);card.addView(paste);
         TextView manual=text("手动输入配对信息  ›",13,muted);manual.setTextIsSelectable(false);manual.setGravity(android.view.Gravity.CENTER);manual.setPadding(0,dp(16),0,dp(10));card.addView(manual);
         LinearLayout fields=vertical();fields.setVisibility(View.GONE);card.addView(fields);
         EditText address=field("电脑地址，例如 IP:9443"),fingerprint=field("电脑证书指纹"),code=field("配对码");
         address.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);fingerprint.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);code.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        for(EditText input:new EditText[]{address,fingerprint,code}){input.setBackground(rounded(Color.rgb(42,42,42),14));fields.addView(input);}
+        for(EditText input:new EditText[]{address,fingerprint,code}){input.setBackground(rounded(surface(42,42,42),14));fields.addView(input);}
         TextView feedback=text("配对二维码只在手机本地识别。",12,muted);card.addView(feedback);
         Button pair=button("配对并连接");pair.setVisibility(View.GONE);card.addView(pair);
         manual.setOnClickListener(v->{boolean show=fields.getVisibility()!=View.VISIBLE;fields.setVisibility(show?View.VISIBLE:View.GONE);pair.setVisibility(show?View.VISIBLE:View.GONE);manual.setText(show?"收起手动填写  ⌃":"手动输入配对信息  ›");});
@@ -213,7 +240,7 @@ public final class MainActivity extends Activity {
         pair.setOnClickListener(v->{if(api==null)pairAction.onClick(v);});
         TextView footer=text("连接后可继续对话、查看进度和处理审批。",12,muted);footer.setGravity(android.view.Gravity.CENTER);footer.setPadding(0,dp(18),0,dp(10));form.addView(footer);
         refreshPairingUi();
-        if(api!=null){pair.setEnabled(false);footer.setText("正在预览连接引导，当前配对保持不变。");Button back=button("返回当前对话");back.setBackground(rounded(Color.rgb(42,42,42),16));back.setTextColor(foreground);form.addView(back);back.setOnClickListener(v->leaveConnectionGuide());}
+        if(api!=null){pair.setEnabled(false);footer.setText("正在预览连接引导，当前配对保持不变。");Button back=button("返回当前对话");back.setBackground(rounded(surface(42,42,42),16));back.setTextColor(foreground);form.addView(back);back.setOnClickListener(v->leaveConnectionGuide());}
     }
     private void leaveConnectionGuide(){connectionGuideVisible=false;pairingInput=null;chatPage();try{if(SessionService.latest!=null)render(SessionService.latest);}catch(Exception ignored){}beginPolling();}
     private void joinPairingNetwork(PairingInfo info,Runnable paired,java.util.function.Consumer<String> failed){
@@ -230,7 +257,7 @@ public final class MainActivity extends Activity {
             if(saved!=null){api=new RemoteApi(saved.getString("address"),saved.getString("fingerprint"),saved.getString("token"));selectedThreadId="";currentState=null;pairingInput=null;chatPage();if(visible)beginPolling();return;}
             JSONObject pending=PairingCoordinator.pending(this);if(pairingProgressCard==null)return;
             pairingProgressCard.setVisibility(pending==null?View.GONE:View.VISIBLE);boolean busy=PairingCoordinator.busy();
-            if(pending!=null){boolean uncertain="submitting".equals(pending.optString("phase"));String message=PairingCoordinator.message();pairingProgressText.setText(message.isEmpty()?(uncertain?"上次配对结果未确认，请重新扫码":"入网流程尚未完成，点击继续配对"):message);pairingProgressText.setTextColor(PairingCoordinator.failed()?Color.rgb(241,175,157):accent);pairingSpinner.setVisibility(busy?View.VISIBLE:View.GONE);pairingContinue.setVisibility(!busy&&!uncertain?View.VISIBLE:View.GONE);pairingRescan.setVisibility(busy?View.GONE:View.VISIBLE);}
+            if(pending!=null){boolean uncertain="submitting".equals(pending.optString("phase"));String message=PairingCoordinator.message();pairingProgressText.setText(message.isEmpty()?(uncertain?"上次配对结果未确认，请重新扫码":"入网流程尚未完成，点击继续配对"):message);pairingProgressText.setTextColor(PairingCoordinator.failed()?surface(241,175,157):accent);pairingSpinner.setVisibility(busy?View.VISIBLE:View.GONE);pairingContinue.setVisibility(!busy&&!uncertain?View.VISIBLE:View.GONE);pairingRescan.setVisibility(busy?View.GONE:View.VISIBLE);}
             if(pairingRefreshControls!=null)pairingRefreshControls.run();
         }catch(Exception error){toast("无法恢复配对流程，请重新扫码");}
     }
@@ -245,17 +272,17 @@ public final class MainActivity extends Activity {
     private void connectionModeDialog(){connectionModeDialog(status!=null&&status.isAttachedToWindow()?status:root);}
     private java.util.function.Consumer<Boolean> switchVpnPermission;
     private void connectionModeDialog(View anchor){
-        if(api==null){connectionPage();return;}if(sending)return;
+        if(api==null){connectionPage();return;}if(isSending())return;
         final RemoteApi original=api;final int epoch=generation;
         try{
             JSONObject saved=storage.load(),profiles=saved.optJSONObject("addresses");if(profiles==null)profiles=new JSONObject();final JSONObject addresses=profiles;
             JSONObject advertised=currentState==null?null:currentState.optJSONObject("connectionAddresses");final JSONObject hints=advertised==null?new JSONObject():advertised;
             String previous=getPreferences(MODE_PRIVATE).getString("networkMode","lan");
-            LinearLayout card=vertical();card.setPadding(dp(10),dp(8),dp(10),dp(8));card.setBackground(rounded(Color.rgb(40,40,40),22));
+            LinearLayout card=vertical();card.setPadding(dp(10),dp(8),dp(10),dp(8));card.setBackground(rounded(surface(40,40,40),22));
             TextView title=text("连接方式",12,muted);title.setPadding(dp(10),dp(4),dp(10),dp(6));card.addView(title);
             final PopupWindow[] menu={null};final boolean[] busy={false},startedEt={false};Runnable cleanup=()->{if(startedEt[0]&&api==original&&"lan".equals(previous)){EasyTierVpnService.disconnect(this);startedEt[0]=false;}};TextView feedback=text("",12,muted);feedback.setPadding(dp(10),dp(4),dp(10),dp(6));feedback.setVisibility(View.GONE);
             for(String mode:new String[]{"lan","easytier"}){
-                boolean direct="lan".equals(mode);TextView row=text((direct?"局域网直连":"EasyTier 网络")+(previous.equals(mode)?"    ✓":""),15,foreground);row.setTextIsSelectable(false);row.setPadding(dp(12),dp(12),dp(12),dp(12));row.setBackground(rounded(previous.equals(mode)?Color.rgb(52,52,52):Color.TRANSPARENT,12));card.addView(row,new LinearLayout.LayoutParams(-1,dp(48)));
+                boolean direct="lan".equals(mode);TextView row=text((direct?"局域网直连":"EasyTier 网络")+(previous.equals(mode)?"    ✓":""),15,foreground);row.setTextIsSelectable(false);row.setPadding(dp(12),dp(12),dp(12),dp(12));row.setBackground(rounded(previous.equals(mode)?surface(52,52,52):Color.TRANSPARENT,12));card.addView(row,new LinearLayout.LayoutParams(-1,dp(48)));
                 row.setOnClickListener(v->{if(busy[0])return;
                     String address=addresses.optString(mode,hints.optString(direct?"lan":"primary",previous.equals(mode)?original.address:""));
                     if(address.isEmpty()){toast("请先在设置 → 连接方式中配置电脑地址");return;}
@@ -281,17 +308,17 @@ public final class MainActivity extends Activity {
         }catch(Exception e){toast("无法读取连接方式");}
     }
     private void connectionSettingsDialog(View anchor) {
-        if(api==null){connectionPage();return;}if(sending){toast("请等待当前提交完成");return;}
+        if(api==null){connectionPage();return;}if(isSending()){toast("请等待当前提交完成");return;}
         try {
             RemoteApi original=api;int epoch=generation;JSONObject saved=storage.load();JSONObject addresses=saved==null?null:saved.optJSONObject("addresses");if(addresses==null)addresses=new JSONObject();final JSONObject profiles=addresses;
             JSONObject advertised=currentState==null?null:currentState.optJSONObject("connectionAddresses");final JSONObject hints=advertised==null?new JSONObject():advertised;
             final PopupWindow[] connectionMenu={null};final LinearLayout[] connectionCard={null};LinearLayout form=vertical();form.setPadding(dp(20),0,dp(20),dp(12));RadioGroup modes=new RadioGroup(this);RadioButton lan=new RadioButton(this),et=new RadioButton(this);lan.setId(View.generateViewId());et.setId(View.generateViewId());lan.setText("局域网直连 · 同一 Wi-Fi");et.setText("EasyTier · 异地组网");lan.setTextColor(foreground);et.setTextColor(foreground);modes.addView(lan);modes.addView(et);form.addView(modes);
-            TextView hint=text("",13,muted);form.addView(hint);EditText address=field("电脑 IP:9443");address.setBackground(rounded(Color.rgb(46,46,46),14));address.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);form.addView(address);
+            TextView hint=text("",13,muted);form.addView(hint);EditText address=field("电脑 IP:9443");address.setBackground(rounded(surface(46,46,46),14));address.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);form.addView(address);
             Button etSettings=button("配置 / 连接 EasyTier");form.addView(etSettings);etSettings.setOnClickListener(v->easyTierDialog());
             modes.setOnCheckedChangeListener((group,id)->{boolean direct=id==lan.getId();String key=direct?"lan":"easytier";address.setText(profiles.optString(key,hints.optString(direct?"lan":"primary",direct?"":original.address)));etSettings.setVisibility(direct?View.GONE:View.VISIBLE);hint.setText(direct?"填写电脑的局域网 IPv4。电脑插件需绑定此地址，或开启额外局域网直连。":"先连接 EasyTier，再填写电脑虚拟 IP。切换地址仍会校验同一电脑证书及授权。");if(connectionMenu[0]!=null)form.post(()->AnchoredMenu.resize(this,anchor,connectionCard[0],connectionMenu[0]));});
             modes.check("easytier".equals(getPreferences(MODE_PRIVATE).getString("networkMode",""))?et.getId():lan.getId());
             TextView feedback=text("验证成功后才会保存，不需要重新配对同一台电脑。",12,muted);form.addView(feedback);ScrollView body=new ScrollView(this);body.addView(form);
-            LinearLayout card=vertical();card.setPadding(dp(8),dp(8),dp(8),dp(12));card.setBackground(rounded(Color.rgb(35,35,35),24));card.addView(text("连接方式",16,foreground));card.addView(body,new LinearLayout.LayoutParams(-1,-2));Button verify=button("验证并切换");card.addView(verify);PopupWindow dialog=AnchoredMenu.show(this,anchor,card,dp(350),true);connectionMenu[0]=dialog;connectionCard[0]=card;
+            LinearLayout card=vertical();card.setPadding(dp(8),dp(8),dp(8),dp(12));card.setBackground(rounded(surface(35,35,35),24));card.addView(text("连接方式",16,foreground));card.addView(body,new LinearLayout.LayoutParams(-1,-2));Button verify=button("验证并切换");card.addView(verify);PopupWindow dialog=AnchoredMenu.show(this,anchor,card,dp(350),true);connectionMenu[0]=dialog;connectionCard[0]=card;
             verify.setOnClickListener(v->{
                 final String mode=modes.getCheckedRadioButtonId()==lan.getId()?"lan":"easytier";
                 final RemoteApi candidate;try{candidate=new RemoteApi(MobileState.connectionAddress(address.getText().toString()),original.fingerprint,original.token);}catch(Exception e){feedback.setText(error(e));return;}
@@ -316,20 +343,21 @@ public final class MainActivity extends Activity {
         LinearLayout heading = vertical(); selectChat = new Button(this); selectChat.setText("Codex"); selectChat.setTextColor(foreground); selectChat.setTextSize(18); selectChat.setAllCaps(false); selectChat.setGravity(android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL); selectChat.setBackgroundColor(Color.TRANSPARENT); selectChat.setPadding(dp(4),0,0,0); selectChat.setSingleLine(true); selectChat.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heading.addView(selectChat,new LinearLayout.LayoutParams(-1,dp(31))); selectChat.setOnClickListener(v -> chooseChat());
         LinearLayout statusLine=new LinearLayout(this);statusLine.setGravity(android.view.Gravity.CENTER_VERTICAL);statusLine.setPadding(dp(4),0,0,0);
-        View dot=new View(this);connectionDot=new android.graphics.drawable.GradientDrawable();connectionDot.setShape(android.graphics.drawable.GradientDrawable.OVAL);connectionDot.setColor(Color.rgb(255,159,10));dot.setBackground(connectionDot);LinearLayout.LayoutParams dotSpace=new LinearLayout.LayoutParams(dp(6),dp(6));dotSpace.rightMargin=dp(6);statusLine.addView(dot,dotSpace);
+        View dot=new View(this);connectionDot=new android.graphics.drawable.GradientDrawable();connectionDot.setShape(android.graphics.drawable.GradientDrawable.OVAL);connectionDot.setColor(surface(255,159,10));dot.setBackground(connectionDot);LinearLayout.LayoutParams dotSpace=new LinearLayout.LayoutParams(dp(6),dp(6));dotSpace.rightMargin=dp(6);statusLine.addView(dot,dotSpace);
         status = text("正在连接电脑…",11,muted); status.setTextIsSelectable(false); status.setSingleLine(true);statusLine.addView(status);heading.addView(statusLine);
         status.setContentDescription("切换连接方式");status.setOnClickListener(v->connectionModeDialog(v));
         statusLine.setOnClickListener(v->connectionModeDialog(status));
         header.addView(heading,new LinearLayout.LayoutParams(0,dp(56),1));usageRings=new UsageRingsView(this);header.addView(usageRings,new LinearLayout.LayoutParams(dp(48),dp(48)));usageRings.setOnClickListener(v->usageDialog());updateUsageIndicator();root.addView(header);
         renderRevision++;deferredRows=null;displayedChat="";listScrolling=false;
-        scroll=new TranscriptListView(this);scroll.onViewportSettled=this::updateLatestJump;scroll.setDivider(null);scroll.setDividerHeight(0);scroll.setCacheColorHint(Color.TRANSPARENT);scroll.setSelector(android.R.color.transparent);scroll.setClipToPadding(false);scroll.setPadding(0,dp(20),0,dp(20));scroll.setVerticalScrollBarEnabled(false);
+        scroll=new TranscriptListView(this);scroll.setItemsCanFocus(true);scroll.setDescendantFocusability(android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);scroll.onViewportSettled=this::updateLatestJump;scroll.setDivider(null);scroll.setDividerHeight(0);scroll.setCacheColorHint(Color.TRANSPARENT);scroll.setSelector(android.R.color.transparent);scroll.setClipToPadding(false);scroll.setPadding(0,dp(20),0,dp(20));scroll.setVerticalScrollBarEnabled(false);
         chatAdapter=new ChatAdapter();scroll.setAdapter(chatAdapter);
         LinearLayout historyArea=new LinearLayout(this);FrameLayout transcript=new FrameLayout(this);transcript.addView(scroll,new FrameLayout.LayoutParams(-1,-1));
-        latestJump=text("↓ 回到最新",12,foreground);latestJump.setTextIsSelectable(false);latestJump.setGravity(android.view.Gravity.CENTER);latestJump.setPadding(dp(14),0,dp(14),0);latestJump.setBackground(rounded(Color.rgb(49,49,49),22));latestJump.setElevation(dp(4));latestJump.setOnClickListener(v->{if(chatAdapter.getCount()>0)scroll.setSelection(chatAdapter.getCount()-1);});FrameLayout.LayoutParams jumpParams=new FrameLayout.LayoutParams(-2,dp(40),android.view.Gravity.BOTTOM|android.view.Gravity.RIGHT);jumpParams.setMargins(0,0,dp(12),dp(10));transcript.addView(latestJump,jumpParams);latestJump.setVisibility(View.GONE);historyArea.addView(transcript,new LinearLayout.LayoutParams(0,-1,1));
+        latestJump=text("↓ 回到最新",12,foreground);latestJump.setTextIsSelectable(false);latestJump.setGravity(android.view.Gravity.CENTER);latestJump.setPadding(dp(14),0,dp(14),0);latestJump.setBackground(rounded(surface(49,49,49),22));latestJump.setElevation(dp(4));latestJump.setOnClickListener(v->{if(chatAdapter.getCount()>0)scroll.setSelection(chatAdapter.getCount()-1);});FrameLayout.LayoutParams jumpParams=new FrameLayout.LayoutParams(-2,dp(40),android.view.Gravity.BOTTOM|android.view.Gravity.RIGHT);jumpParams.setMargins(0,0,dp(12),dp(10));transcript.addView(latestJump,jumpParams);latestJump.setVisibility(View.GONE);historyArea.addView(transcript,new LinearLayout.LayoutParams(0,-1,1));
         jumpRail=new ConversationRail(this,new ConversationRail.Listener(){public void preview(ConversationRail.Entry entry,int index,int count,float y){showRailPreview(entry,index,count,y);}public void commit(ConversationRail.Entry entry){jumpTo(entry.key);}public void end(){dismissRailPreview();}});
         jumpRail.setOnClickListener(v->jumpDialog());historyArea.addView(jumpRail,new LinearLayout.LayoutParams(dp(30),-1));railChat="";root.addView(historyArea,new LinearLayout.LayoutParams(-1,0,1));
         scroll.setOnScrollListener(new AbsListView.OnScrollListener(){public void onScroll(AbsListView v,int first,int count,int total){highlightJumpRail(first);updateLatestJump();}public void onScrollStateChanged(AbsListView v,int state){listScrolling=state!=SCROLL_STATE_IDLE;if(!listScrolling&&deferredRows!=null){renderHandler.removeCallbacks(flushRows);java.util.List<ChatRows.Row> rows=deferredRows;deferredRows=null;applyRows(rows);}}});
-        LinearLayout dock = vertical(); dock.setPadding(dp(10),dp(4),dp(10),dp(8)); dock.setBackground(rounded(Color.rgb(38,38,38),24));
+        questionArea=new InlineQuestionsView(this,()->root.getHeight()-root.getPaddingTop()-root.getPaddingBottom());questionContent=vertical();questionArea.addView(questionContent);questionArea.setVisibility(View.GONE);questionSignature="";questionChat="";root.addView(questionArea,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout dock = vertical(); dock.setPadding(dp(10),dp(4),dp(10),dp(8)); dock.setBackground(rounded(surface(38,38,38),24));
         composer = field("发送消息"); composer.setBackgroundColor(Color.TRANSPARENT); composer.setSingleLine(false); composer.setMaxLines(6); composer.setMinLines(1); composer.setPadding(dp(12),dp(12),dp(8),dp(12)); composer.setText(drafts.containsKey(selectedThreadId) ? drafts.get(selectedThreadId) : "");
         dock.addView(composer,new LinearLayout.LayoutParams(-1,-2));
         LinearLayout controls=new LinearLayout(this);controls.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -338,7 +366,7 @@ public final class MainActivity extends Activity {
         sendStatus = text("正在同步聊天状态…", 11, muted); sendStatus.setGravity(android.view.Gravity.CENTER); sendStatus.setTextIsSelectable(false); root.addView(sendStatus);
         sendStatus.setOnClickListener(view -> { toast("正在重新同步所选聊天"); beginPolling(true); });
         send.setOnClickListener(view -> {
-            String action=MobileState.composerAction(currentState,currentThread,sending,composer.getText().toString());
+            String action=MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString());
             if("interrupt".equals(action)){try{command(new JSONObject().put("op","interrupt").put("turnId",MobileState.activeTurnId(currentThread)),false);}catch(Exception e){toast(error(e));}}
             else if(!"none".equals(action))submit(action);
         });
@@ -353,7 +381,7 @@ public final class MainActivity extends Activity {
         });
     }
     private void submit(String operation) {
-        String blocked = MobileState.unavailableReason(currentState, currentThread, sending);
+        String blocked = MobileState.unavailableReason(currentState, currentThread, isSending());
         if (!blocked.isEmpty()) { toast(blocked); return; }
         String value = composer.getText().toString();
         if (value.trim().isEmpty()) { toast("请先输入消息"); return; }
@@ -362,31 +390,32 @@ public final class MainActivity extends Activity {
     private void command(JSONObject payload, boolean clearComposer){command(payload,clearComposer,null);}
     private void command(JSONObject payload, boolean clearComposer,Runnable confirmed){command(payload,clearComposer,confirmed,null);}
     private void command(JSONObject payload, boolean clearComposer,Runnable confirmed,Runnable failed) {
-        if (currentThread == null || api == null || sending) return;
+        if (currentThread == null || api == null || isSending()) return;
         try { if (!payload.has("threadId")) payload.put("threadId", currentThread.getString("id")); } catch (Exception e) { return; }
         RemoteApi client = api; int epoch = generation; String textBefore = composer.getText().toString();
-        sending = true; setButtons(false); String id = UUID.randomUUID().toString();
+        String id=UUID.randomUUID().toString(),chat=payload.optString("threadId");
+        if(!commands.begin(chat,id))return;setButtons(false);RemoteApi channel=client.readChannel();commandChannels.put(id,channel);
         worker.execute(() -> {
             try {
-                client.call("POST", "/v1/command", payload, id);
+                channel.call("POST", "/v1/command", payload, id);
                 runOnUiThread(() -> { if (epoch == generation && client == api) {
                     if (clearComposer && payload.optString("threadId").equals(selectedThreadId) && composer.getText().toString().equals(textBefore)) { composer.setText(""); drafts.remove(selectedThreadId); }
                     if("model".equals(payload.optString("op"))){JSONObject cached=modelCache.get(modelCacheKey(client,payload.optString("threadId")));if(cached!=null)try{cached.put("current",new JSONObject().put("model",payload.optString("model")).put("effort",payload.optString("effort")).put("serviceTier",payload.optString("serviceTier",cached.optJSONObject("current")==null?"default":cached.optJSONObject("current").optString("serviceTier","default"))));}catch(Exception ignored){}}
                     if(confirmed!=null)confirmed.run();if(confirmed==null||!"model".equals(payload.optString("op")))toast("电脑已接收");
                 } });
             } catch (Exception e) { runOnUiThread(() -> { if (epoch == generation && client == api){if(failed!=null)failed.run();toast("提交未确认，请检查聊天状态后再操作：" + error(e));} }); }
-            finally { runOnUiThread(() -> { if (epoch == generation && client == api) { sending = false; setButtons(currentThread != null && currentThread.optBoolean("ready")); } }); }
+            finally { channel.cancel();runOnUiThread(() -> {commandChannels.remove(id);commands.finish(chat,id);if(epoch==generation&&client==api)setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}); }
         });
     }
     private void setButtons(boolean ready) {
         if (send == null) return;
         boolean active = !MobileState.activeTurnId(currentThread).isEmpty();
-        String reason = MobileState.unavailableReason(currentState, currentThread, sending);
+        String reason = MobileState.unavailableReason(currentState, currentThread, isSending());
         ready = ready && reason.isEmpty();
-        String action=MobileState.composerAction(currentState,currentThread,sending,composer.getText().toString());
+        String action=MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString());
         boolean stop="interrupt".equals(action);send.setEnabled(ready && !"none".equals(action));send.setAlpha(send.isEnabled()?1f:.35f);
         UiIcon image=new UiIcon(stop?"stop":"send",background);image.setBounds(0,0,dp(22),dp(22));send.setCompoundDrawables(image,null,null,null);
-        send.setContentDescription(sending?"正在提交":stop?"停止当前回复":"steer".equals(action)?"追加指令":"发送消息");
+        send.setContentDescription(isSending()?"正在提交":stop?"停止当前回复":"steer".equals(action)?"追加指令":"发送消息");
         if (sendStatus != null) sendStatus.setText(reason.isEmpty()
             ? active ? (stop?"正在回复 · 点击方形按钮停止":"发送会追加到当前任务") : "消息发送至电脑上的 Codex"
             : reason + " · 点此重新同步");
@@ -394,12 +423,20 @@ public final class MainActivity extends Activity {
     private void render(JSONObject state) throws Exception {
         if(connectionGuideVisible){currentState=state;return;}
         currentState = state;
+        if(appUpdates!=null&&api!=null&&state.optBoolean("online"))appUpdates.desktop(state.optString("desktopVersion"),api.fingerprint);
         JSONArray threads = state.optJSONArray("threads"); if (threads == null) threads = new JSONArray();
         if (selectedThreadId.isEmpty()) selectedThreadId = state.optString("selectedThreadId");
         if (selectedThreadId.isEmpty() && threads.length() > 0) selectedThreadId = threads.getJSONObject(0).getString("id");
         currentThread = null;
         for (int i = 0; i < threads.length(); i++) if (threads.getJSONObject(i).getString("id").equals(selectedThreadId)) currentThread = threads.getJSONObject(i);
+        if(currentThread!=null){
+            JSONObject visibleThread=new JSONObject();java.util.Iterator<String> fields=currentThread.keys();while(fields.hasNext()){String key=fields.next();visibleThread.put(key,currentThread.get(key));}currentThread=visibleThread;JSONArray questions=currentThread.optJSONArray("questions"),shown=new JSONArray();
+            java.util.Set<String> hidden=getSharedPreferences("dismissedQuestions",MODE_PRIVATE).getStringSet("keys",java.util.Collections.emptySet());
+            if(questions!=null)for(int i=0;i<questions.length();i++){JSONObject request=questions.getJSONObject(i);if(!hidden.contains(questionDismissalKey(request)))shown.put(request);}
+            currentThread.put("questions",shown);
+        }
         updateConnectionDot();updateUsageIndicator();
+        updateQuestionCards();
         if (currentThread == null) {
             status.setText(state.optBoolean("online") ? "正在加载所选聊天历史…" : "离线 · 暂无该聊天的本地记录");
             renderRevision++;renderHandler.removeCallbacks(prepareRows);deferredRows=null;chatAdapter.replace(java.util.Collections.emptyList());jumpRail.entries(java.util.Collections.emptyList());jumpRail.cancel();railChat="";setButtons(false);displayedChat="";return;
@@ -416,8 +453,17 @@ public final class MainActivity extends Activity {
     }
     private void updateConnectionDot(){
         if(connectionDot==null)return;String state=UsagePresentation.connection(currentState,currentThread,SessionService.message);int color;
-        switch(state){case "connected":color=Color.rgb(48,209,88);break;case "busy":color=Color.rgb(10,132,255);break;case "error":color=Color.rgb(255,69,58);break;case "offline":color=Color.rgb(142,142,147);break;default:color=Color.rgb(255,159,10);}
+        switch(state){case "connected":color=surface(48,209,88);break;case "busy":color=surface(10,132,255);break;case "error":color=surface(255,69,58);break;case "offline":color=surface(142,142,147);break;default:color=surface(255,159,10);}
         connectionDot.setColor(color);
+    }
+    private void updateQuestionCards(){
+        if(questionArea==null)return;JSONArray questions=currentThread==null?null:currentThread.optJSONArray("questions");
+        boolean active=currentThread!=null&&currentThread.optBoolean("ready")&&!MobileState.activeTurnId(currentThread).isEmpty();
+        if(!active||questions==null)questions=new JSONArray();String signature=questions.toString(),chat=currentThread==null?"":currentThread.optString("id");
+        if(signature.equals(questionSignature)&&chat.equals(questionChat))return;
+        questionSignature=signature;questionChat=chat;questionContent.removeAllViews();
+        for(int i=0;i<questions.length();i++){JSONObject request=questions.optJSONObject(i);if(request!=null){View card=questionCard(new ChatRows.Row(chat+":question:"+request.optString("id"),"question",request));LinearLayout.LayoutParams space=new LinearLayout.LayoutParams(-1,-2);space.bottomMargin=dp(8);questionContent.addView(card,space);}}
+        questionArea.setVisibility(questionContent.getChildCount()==0?View.GONE:View.VISIBLE);
     }
     private JSONObject visibleUsage(){return api!=null&&api.fingerprint.equals(SessionService.usageComputer)?SessionService.usage:null;}
     private void updateUsageIndicator(){
@@ -437,7 +483,7 @@ public final class MainActivity extends Activity {
         usageUpdated.setText(value==null||!value.optBoolean("available")?"暂未取得额度，请保持电脑连接。":(!online?"离线 · ":value.optBoolean("stale")?"上次读取 · ":"更新于 ")+(at>0?new java.text.SimpleDateFormat("HH:mm",java.util.Locale.CHINA).format(new java.util.Date(at)):"未知时间"));
     }
     private void usageDialog(){
-        if(usagePopup!=null)usagePopup.dismiss();LinearLayout card=vertical();card.setPadding(dp(20),dp(18),dp(20),dp(18));card.setBackground(rounded(Color.rgb(37,37,39),24));
+        if(usagePopup!=null)usagePopup.dismiss();LinearLayout card=vertical();card.setPadding(dp(20),dp(18),dp(20),dp(18));card.setBackground(rounded(surface(37,37,39),24));
         TextView title=text("剩余额度",17,foreground);title.setTypeface(null,Typeface.BOLD);card.addView(title);
         usagePrimary=text("",14,UsageRingsView.OUTER);usagePrimary.setPadding(0,dp(16),0,dp(12));card.addView(usagePrimary);
         usageSecondary=text("",14,UsageRingsView.INNER);usageSecondary.setPadding(0,0,0,dp(14));card.addView(usageSecondary);
@@ -446,7 +492,7 @@ public final class MainActivity extends Activity {
         usagePopup=AnchoredMenu.show(this,usageRings,card,dp(292),false);usagePopup.setOnDismissListener(()->{usagePopup=null;usagePrimary=null;usageSecondary=null;usageUpdated=null;});
     }
     private View toolCard(JSONObject tool,String key) {
-        LinearLayout card=vertical();card.setPadding(dp(12),dp(4),dp(12),dp(8));card.setBackground(rounded(Color.rgb(29,29,29),12));
+        LinearLayout card=vertical();card.setPadding(dp(12),dp(4),dp(12),dp(8));card.setBackground(rounded(surface(29,29,29),12));
         LinearLayout header=new LinearLayout(this);header.setGravity(android.view.Gravity.CENTER_VERTICAL);header.setMinimumHeight(dp(46));
         ImageView arrow=new ImageView(this);arrow.setImageDrawable(new UiIcon("next",muted));header.addView(arrow,new LinearLayout.LayoutParams(dp(16),dp(16)));
         String state=tool.optString("status");String label="inProgress".equals(state)?"进行中":"failed".equals(state)?"失败":"completed".equals(state)?"已完成":"declined".equals(state)?"已拒绝":"";
@@ -462,10 +508,11 @@ public final class MainActivity extends Activity {
         if(!output.isEmpty())toolText(details,"输出",output);
         if(tool.has("exitCode"))details.addView(text("退出码 "+tool.optInt("exitCode"),12,muted));
         if(tool.optBoolean("truncated"))details.addView(text("内容较长，完整记录请在电脑查看。",12,muted));
+        chatFiles.add(details,tool.optJSONArray("files"),currentThread.optString("id"),api);
         if(details.getChildCount()==0)details.addView(text("当前工具未提供更多详情。",12,muted));
     }
     private View toolGroup(ChatRows.Row row){
-        LinearLayout card=vertical();card.setPadding(dp(8),dp(4),dp(8),dp(6));card.setBackground(rounded(Color.rgb(29,29,29),12));
+        LinearLayout card=vertical();card.setPadding(dp(8),dp(4),dp(8),dp(6));card.setBackground(rounded(surface(29,29,29),12));
         JSONArray tools=row.data.optJSONArray("items");int count=tools==null?0:tools.length();int running=0,failed=0;
         for(int i=0;i<count;i++){String state=tools.optJSONObject(i).optString("status");if("inProgress".equals(state))running++;if("failed".equals(state))failed++;}
         String label="工具调用 · "+count+" 项"+(running>0?" · "+running+" 项进行中":failed>0?" · "+failed+" 项失败":"");
@@ -478,6 +525,7 @@ public final class MainActivity extends Activity {
     }
     private void applyRows(java.util.List<ChatRows.Row> rows){
         if(chatAdapter==null||currentThread==null)return;
+        java.util.List<ChatRows.Row> transcript=new java.util.ArrayList<>();for(ChatRows.Row row:rows)if(!"question".equals(row.type))transcript.add(row);rows=transcript;
         String chat=currentThread.optString("id");boolean switched=!chat.equals(displayedChat);
         if(!switched&&chatAdapter.matches(rows))return;
         int first=scroll.getFirstVisiblePosition();View firstView=scroll.getChildAt(0);int top=firstView==null?scroll.getPaddingTop():firstView.getTop();
@@ -514,11 +562,11 @@ public final class MainActivity extends Activity {
     private void dismissRailPreview(){if(railPreview!=null){railPreview.dismiss();railPreview=null;railPreviewContent="";}}
     private void showRailPreview(ConversationRail.Entry entry,int index,int count,float y){
         if(railPreview==null){
-            LinearLayout preview=vertical();preview.setPadding(dp(14),dp(12),dp(14),dp(12));preview.setBackground(rounded(Color.rgb(43,43,43),16));
+            LinearLayout preview=vertical();preview.setPadding(dp(14),dp(12),dp(14),dp(12));preview.setBackground(rounded(surface(43,43,43),16));
             railPreviewTitle=text("",12,muted);railPreviewTitle.setTextIsSelectable(false);preview.addView(railPreviewTitle);
             railPreviewPrompt=text("",14,foreground);railPreviewPrompt.setMaxLines(3);railPreviewPrompt.setEllipsize(android.text.TextUtils.TruncateAt.END);railPreviewPrompt.setTextIsSelectable(false);preview.addView(railPreviewPrompt);
             railPreviewReply=text("",12,muted);railPreviewReply.setMaxLines(3);railPreviewReply.setEllipsize(android.text.TextUtils.TruncateAt.END);railPreviewReply.setTextIsSelectable(false);preview.addView(railPreviewReply);
-            railPreview=new PopupWindow(preview,Math.min(dp(330),getResources().getDisplayMetrics().widthPixels-dp(64)),-2,false);railPreview.setTouchable(false);railPreview.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);railPreview.setBackgroundDrawable(rounded(Color.rgb(43,43,43),16));railPreview.setElevation(dp(8));
+            railPreview=new PopupWindow(preview,Math.min(dp(330),getResources().getDisplayMetrics().widthPixels-dp(64)),-2,false);railPreview.setTouchable(false);railPreview.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);railPreview.setBackgroundDrawable(rounded(surface(43,43,43),16));railPreview.setElevation(dp(8));
         }
         View panel=railPreview.getContentView();String content=entry.key+":"+index+":"+count+":"+entry.prompt+":"+entry.response;
         if(!content.equals(railPreviewContent)){
@@ -559,12 +607,12 @@ public final class MainActivity extends Activity {
             });
         }catch(Exception e){runOnUiThread(()->{if(modelLoading.get(key)==request)modelLoading.remove(key);if(isDestroyed()||client!=api||epoch!=generation)return;modelCacheAt.put(key,android.os.SystemClock.uptimeMillis());if(key.equals(modelOpenWanted)){modelOpenWanted="";modelChoice.setAlpha(1);toast("读取模型失败："+error(e));}});}});
     }
-    private void modelDialog(){if(!sending)loadModels(true);}
+    private void modelDialog(){if(!isSending())loadModels(true);}
     private String effortLabel(String value){return ModelPresentation.effort(value);}
     private PowerLabel powerText(String value,int size,int color){PowerLabel label=new PowerLabel(this);label.setText(value);label.setTextSize(size);label.setTextColor(color);label.setPadding(0,dp(7),0,dp(7));return label;}
     private boolean modelContextValid(String threadId,RemoteApi client,int epoch){return !isDestroyed()&&client==api&&epoch==generation&&threadId.equals(selectedThreadId)&&currentState.optBoolean("online")&&currentThread!=null&&currentThread.optBoolean("ready");}
     private void applyModel(JSONObject model,String effort,String threadId,RemoteApi client,int epoch){
-        if(!modelContextValid(threadId,client,epoch)){toast("聊天或连接已变化，请重新打开模型设置");return;}if(sending){toast("正在提交，请稍候");return;}
+        if(!modelContextValid(threadId,client,epoch)){toast("聊天或连接已变化，请重新打开模型设置");return;}if(isSending()){toast("正在提交，请稍候");return;}
         try{command(new JSONObject().put("op","model").put("model",model.getString("model")).put("effort",effort),false);}catch(Exception e){toast(error(e));}
     }
     private void dismissModelPopup(){if(modelPopup!=null){modelPopup.dismiss();modelPopup=null;}}
@@ -574,23 +622,23 @@ public final class MainActivity extends Activity {
         JSONArray available=model.optJSONArray("efforts");if(available==null||available.length()==0){toast("此模型未提供思考强度");return;}
         final JSONArray efforts=ModelPresentation.sliderEfforts(available,current.optString("effort"));
         String effort=current.optString("effort",model.optString("defaultEffort"));int initial=0;for(int i=0;i<efforts.length();i++)if(efforts.optString(i).equals(effort))initial=i;
-        dismissModelPopup();LinearLayout panel=vertical();panel.setPadding(dp(12),dp(4),dp(12),dp(6));GradientDrawable background=rounded(Color.rgb(42,42,42),22);background.setStroke(dp(1),Color.rgb(65,65,65));panel.setBackground(background);
+        dismissModelPopup();LinearLayout panel=vertical();panel.setPadding(dp(12),dp(4),dp(12),dp(6));GradientDrawable background=rounded(surface(42,42,42),22);background.setStroke(dp(1),surface(65,65,65));panel.setBackground(background);
         LinearLayout heading=new LinearLayout(this);heading.setGravity(android.view.Gravity.CENTER_VERTICAL);
         JSONObject fastOption=null;JSONArray tiers=model.optJSONArray("serviceTiers");if(tiers!=null)for(int i=0;i<tiers.length();i++)if("priority".equals(tiers.optJSONObject(i).optString("id")))fastOption=tiers.optJSONObject(i);final JSONObject fastTier=fastOption;
         final boolean[] fast={"priority".equals(current.optString("serviceTier"))},pending={false};final int[] confirmed={initial};
         ImageView lightning=new ImageView(this);lightning.setPadding(dp(8),dp(8),dp(8),dp(8));heading.addView(lightning,new LinearLayout.LayoutParams(dp(34),dp(34)));lightning.setEnabled(fastTier!=null);
-        TextView strength=text(effortLabel(efforts.optString(initial)),16,Color.rgb(65,137,251));strength.setGravity(android.view.Gravity.CENTER);strength.setTextIsSelectable(false);strength.setPadding(0,0,0,0);heading.addView(strength,new LinearLayout.LayoutParams(0,dp(34),1));
+        TextView strength=text(effortLabel(efforts.optString(initial)),16,surface(65,137,251));strength.setGravity(android.view.Gravity.CENTER);strength.setTextIsSelectable(false);strength.setPadding(0,0,0,0);heading.addView(strength,new LinearLayout.LayoutParams(0,dp(34),1));
         ImageView reset=new ImageView(this);reset.setImageDrawable(new UiIcon("reset",muted));reset.setPadding(dp(8),dp(8),dp(8),dp(8));reset.setContentDescription("恢复默认推理强度");heading.addView(reset,new LinearLayout.LayoutParams(dp(34),dp(34)));panel.addView(heading);
-        TextView modelName=text(ModelPresentation.name(model.optString("displayName",model.optString("model")))+" ›",13,Color.rgb(191,191,191));modelName.setGravity(android.view.Gravity.CENTER);modelName.setPadding(0,0,0,0);modelName.setTextIsSelectable(false);modelName.setSingleLine(true);modelName.setEllipsize(android.text.TextUtils.TruncateAt.END);modelName.setContentDescription("选择模型");panel.addView(modelName,new LinearLayout.LayoutParams(-1,dp(22)));
+        TextView modelName=text(ModelPresentation.name(model.optString("displayName",model.optString("model")))+" ›",13,surface(191,191,191));modelName.setGravity(android.view.Gravity.CENTER);modelName.setPadding(0,0,0,0);modelName.setTextIsSelectable(false);modelName.setSingleLine(true);modelName.setEllipsize(android.text.TextUtils.TruncateAt.END);modelName.setContentDescription("选择模型");panel.addView(modelName,new LinearLayout.LayoutParams(-1,dp(22)));
         final EffortSlider[] sliderView={null};
         Runnable style=()->{
             boolean ultra="ultra".equals(efforts.optString(sliderView[0]==null?confirmed[0]:sliderView[0].getProgress()));
-            strength.setTextColor(ultra?Color.rgb(176,121,255):Color.rgb(65,137,251));
-            lightning.setImageDrawable(new UiIcon(fast[0]?"bolt-filled":"bolt",fast[0]?(ultra?Color.rgb(174,116,255):Color.rgb(85,155,255)):muted));lightning.setBackground(rounded(fast[0]?Color.rgb(59,59,59):Color.TRANSPARENT,10));lightning.setAlpha(fastTier==null?.35f:pending[0]?.55f:1f);lightning.setContentDescription(fastTier==null?"此模型未提供快速模式":fast[0]?"快速模式已开启，点按切换标准模式，用量更多":"标准模式，点按启用快速模式，用量更多");
+            strength.setTextColor(ultra?surface(176,121,255):surface(65,137,251));
+            lightning.setImageDrawable(new UiIcon(fast[0]?"bolt-filled":"bolt",fast[0]?(ultra?surface(174,116,255):surface(85,155,255)):muted));lightning.setBackground(rounded(fast[0]?surface(59,59,59):Color.TRANSPARENT,10));lightning.setAlpha(fastTier==null?.35f:pending[0]?.55f:1f);lightning.setContentDescription(fastTier==null?"此模型未提供快速模式":fast[0]?"快速模式已开启，点按切换标准模式，用量更多":"标准模式，点按启用快速模式，用量更多");
             if(sliderView[0]!=null){sliderView[0].ultra(ultra);sliderView[0].fast(fast[0]);}
         };
         java.util.function.BiConsumer<Integer,String> submit=(index,tier)->{
-            if(pending[0]||sending||!modelContextValid(threadId,client,epoch))return;
+            if(pending[0]||isSending()||!modelContextValid(threadId,client,epoch))return;
             try{JSONObject payload=new JSONObject().put("op","model").put("threadId",threadId).put("model",model.getString("model")).put("effort",efforts.optString(index));if(tier!=null)payload.put("serviceTier",tier);
                 pending[0]=true;sliderView[0].setEnabled(false);lightning.setEnabled(false);reset.setEnabled(false);modelName.setEnabled(false);style.run();
                 Runnable enable=()->{pending[0]=false;sliderView[0].setEnabled(efforts.length()>1);lightning.setEnabled(fastTier!=null);reset.setEnabled(true);modelName.setEnabled(true);style.run();};
@@ -607,7 +655,7 @@ public final class MainActivity extends Activity {
         modelPopup=AnchoredMenu.show(this,modelChoice,panel,dp(320),false);
     }
     private void showModelPicker(JSONArray models,JSONObject current,String threadId,RemoteApi client,int epoch){
-        final PopupWindow[] menu={null};LinearLayout panel=vertical();panel.setPadding(dp(14),dp(10),dp(14),dp(12));panel.setBackground(rounded(Color.rgb(42,42,42),22));TextView title=text("选择模型",13,muted);title.setTextIsSelectable(false);panel.addView(title);
+        final PopupWindow[] menu={null};LinearLayout panel=vertical();panel.setPadding(dp(14),dp(10),dp(14),dp(12));panel.setBackground(rounded(surface(42,42,42),22));TextView title=text("选择模型",13,muted);title.setTextIsSelectable(false);panel.addView(title);
         TextView group=text("默认",15,foreground);group.setTextIsSelectable(false);group.setPadding(0,dp(6),0,0);panel.addView(group);TextView subtitle=text("推荐模型集",13,muted);subtitle.setTextIsSelectable(false);subtitle.setPadding(0,dp(2),0,dp(8));panel.addView(subtitle);
         ScrollView options=new ScrollView(this);LinearLayout rows=vertical();options.addView(rows);
         for(int i=0;i<models.length();i++){
@@ -619,19 +667,26 @@ public final class MainActivity extends Activity {
     }
     private View questionCard(ChatRows.Row row){
         JSONObject request=row.data;String threadId=currentThread.optString("id");RemoteApi client=api;int epoch=generation;
-        LinearLayout card=vertical();card.setPadding(dp(16),dp(14),dp(16),dp(14));card.setBackground(rounded(Color.rgb(35,35,35),18));card.addView(text("需要你的回复",13,muted));
+        LinearLayout card=vertical();card.setPadding(dp(16),dp(14),dp(16),dp(14));card.setBackground(rounded(surface(35,35,35),18));
+        LinearLayout heading=new LinearLayout(this);heading.setGravity(android.view.Gravity.CENTER_VERTICAL);heading.addView(text("需要你的回复",13,muted),new LinearLayout.LayoutParams(0,-2,1));
+        if("async".equals(request.optString("kind"))){TextView hide=text("暂不回复",12,muted);hide.setTextIsSelectable(false);hide.setPadding(dp(12),dp(12),0,dp(12));heading.addView(hide);hide.setOnClickListener(v->{java.util.Set<String> keys=new java.util.LinkedHashSet<>(getSharedPreferences("dismissedQuestions",MODE_PRIVATE).getStringSet("keys",java.util.Collections.emptySet()));keys.add(questionDismissalKey(request));while(keys.size()>300)keys.remove(keys.iterator().next());getSharedPreferences("dismissedQuestions",MODE_PRIVATE).edit().putStringSet("keys",keys).apply();try{render(currentState);}catch(Exception ignored){}});}card.addView(heading);
         JSONArray questions=request.optJSONArray("questions");java.util.Map<String,java.util.function.Supplier<String>> answers=new java.util.LinkedHashMap<>();
         if(questions!=null)for(int i=0;i<questions.length();i++){
             JSONObject q=questions.optJSONObject(i);String id=q.optString("id"),draftKey=threadId+":"+row.key+":"+id;card.addView(text((questions.length()>1?(i+1)+" / "+questions.length()+"  ":"")+q.optString("title"),16,foreground));
             RadioGroup choices=new RadioGroup(this);JSONArray options=q.optJSONArray("options");EditText custom=new EditText(this);custom.setTextColor(foreground);custom.setHintTextColor(muted);custom.setTextSize(15);custom.setHint(options!=null&&options.length()>0?"其他，请填写":"输入回答");custom.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);if(q.optBoolean("isSecret"))custom.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-            java.util.Map<Integer,String> values=new java.util.HashMap<>();String saved=q.optBoolean("isSecret")?"":questionDrafts.getOrDefault(draftKey,"");int selected=-1;
+            custom.setTag(row.key);custom.setFocusable(true);custom.setFocusableInTouchMode(true);
+            java.util.Map<Integer,String> values=new java.util.HashMap<>();String saved=(q.optBoolean("isSecret")?secretQuestionDrafts:questionDrafts).getOrDefault(draftKey,"");int selected=-1;
             if(options!=null)for(int j=0;j<options.length();j++){JSONObject option=options.optJSONObject(j);RadioButton choice=new RadioButton(this);int viewId=View.generateViewId();choice.setId(viewId);String label=option.optString("label");choice.setText(label+(option.optString("description").isEmpty()?"":"\n"+option.optString("description")));choice.setTextColor(foreground);choice.setTextSize(14);choice.setPadding(0,dp(8),0,dp(8));values.put(viewId,label);choices.addView(choice);if(label.equals(saved)||(j==0&&saved.isEmpty()))selected=viewId;}
             choices.check(selected);card.addView(choices);boolean free=values.isEmpty()||q.optBoolean("isOther");if(free){if(selected<0)custom.setText(saved);card.addView(custom);}
             choices.setOnCheckedChangeListener((g,checked)->{if(checked!=-1){custom.setText("");if(!q.optBoolean("isSecret"))questionDrafts.put(draftKey,values.get(checked));}});
-            custom.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence t,int a,int c,int f){}public void onTextChanged(CharSequence t,int a,int before,int count){if(t.length()>0){choices.clearCheck();if(!q.optBoolean("isSecret"))questionDrafts.put(draftKey,t.toString());}}public void afterTextChanged(android.text.Editable e){}});
+            custom.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence t,int a,int c,int f){}public void onTextChanged(CharSequence t,int a,int before,int count){if(t.length()>0)choices.clearCheck();(q.optBoolean("isSecret")?secretQuestionDrafts:questionDrafts).put(draftKey,t.toString());}public void afterTextChanged(android.text.Editable e){}});
             answers.put(id,()->choices.getCheckedRadioButtonId()!=-1?values.get(choices.getCheckedRadioButtonId()):custom.getText().toString());
         }
-        Button submit=button(request.optBoolean("submitting")?"已提交 · 等待电脑确认":"提交回答");submit.setEnabled(!request.optBoolean("submitting"));submit.setOnClickListener(v->{if(sending){toast("正在提交，请稍候");return;}if(!threadId.equals(selectedThreadId)||client!=api||epoch!=generation){toast("聊天已切换，请重新打开问题");return;}try{JSONObject response=new JSONObject();for(java.util.Map.Entry<String,java.util.function.Supplier<String>> entry:answers.entrySet()){String value=entry.getValue().get();if(value==null||value.trim().isEmpty()){toast("请回答全部问题");return;}response.put(entry.getKey(),new JSONObject().put("answers",new JSONArray().put(value)));}submit.setEnabled(false);command(new JSONObject().put("op","answer").put("requestId",request.get("id")).put("turnId",request.get("turnId")).put("answers",response),false);}catch(Exception e){submit.setEnabled(true);toast(error(e));}});card.addView(submit);return card;
+        Button submit=button(request.optBoolean("submitting")?"已提交 · 等待电脑确认":"提交回答");submit.setEnabled(!request.optBoolean("submitting"));submit.setOnClickListener(v->{if(isSending()){toast("正在提交，请稍候");return;}if(!threadId.equals(selectedThreadId)||client!=api||epoch!=generation){toast("聊天已切换，请重新打开问题");return;}try{JSONObject response=new JSONObject();for(java.util.Map.Entry<String,java.util.function.Supplier<String>> entry:answers.entrySet()){String value=entry.getValue().get();if(value==null||value.trim().isEmpty()){toast("请回答全部问题");return;}response.put(entry.getKey(),new JSONObject().put("answers",new JSONArray().put(value)));}submit.setEnabled(false);command(new JSONObject().put("op","answer").put("requestId",request.get("id")).put("turnId",request.get("turnId")).put("answers",response),false);}catch(Exception e){submit.setEnabled(true);toast(error(e));}});card.addView(submit);return card;
+    }
+    private String questionDismissalKey(JSONObject request){
+        String key=(api==null?"":api.fingerprint)+":"+selectedThreadId+":"+request.optString("turnId")+":"+request.optString("id");
+        try{byte[] digest=java.security.MessageDigest.getInstance("SHA-256").digest(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));StringBuilder hex=new StringBuilder();for(byte value:digest)hex.append(String.format(java.util.Locale.ROOT,"%02x",value&255));return hex.toString();}catch(Exception ignored){throw new IllegalStateException("SHA-256 unavailable");}
     }
     private final class ChatAdapter extends BaseAdapter {
         private java.util.List<ChatRows.Row> rows=java.util.Collections.emptyList();
@@ -640,14 +695,17 @@ public final class MainActivity extends Activity {
         void replace(java.util.List<ChatRows.Row> value){rows=value;notifyDataSetChanged();}
         public int getCount(){return rows.size();}public ChatRows.Row getItem(int position){return rows.get(position);}
         public long getItemId(int position){String key=getItem(position).key;Long id=ids.get(key);if(id==null){id=++nextId;ids.put(key,id);}return id;}
-        public boolean hasStableIds(){return true;}public boolean areAllItemsEnabled(){return false;}public boolean isEnabled(int position){return false;}
+        public boolean hasStableIds(){return true;}public boolean areAllItemsEnabled(){return false;}public boolean isEnabled(int position){return "question".equals(getItem(position).type);}
+        public int getViewTypeCount(){return 2;}public int getItemViewType(int position){return "question".equals(getItem(position).type)?1:0;}
         public View getView(int position,View recycled,android.view.ViewGroup parent){
             ChatRows.Row row=getItem(position);LinearLayout wrapper=recycled instanceof LinearLayout?(LinearLayout)recycled:vertical();
             String bound=row.key+":"+row.signature+":"+expandedTools.contains(row.key);
             if(bound.equals(wrapper.getTag()))return wrapper;
             wrapper.removeAllViews();wrapper.setTag(bound);wrapper.setPadding(0,0,0,dp(6));
             if("tools".equals(row.type))wrapper.addView(toolGroup(row));
-            else if("user".equals(row.type)||"message".equals(row.type))wrapper.addView(bubble("user".equals(row.type)?ChatRows.userText(row.data.optString("text")):ChatRows.displayText(row.data.optString("text")),"user".equals(row.type)));
+            else if("user".equals(row.type)||"message".equals(row.type)){
+                wrapper.addView(bubble("user".equals(row.type)?(row.data.optString("text").isEmpty()?"":ChatRows.userText(row.data.optString("text"))):ChatRows.displayText(row.data.optString("text")),"user".equals(row.type),row.data.optJSONArray("files")));
+            }
             else if("activity".equals(row.type)){
                 LinearLayout activity=vertical();TextView label=text(row.data.optString("label","正在思考…"),13,muted);activity.addView(label);String summary=row.data.optString("summary");if(!summary.isEmpty())activity.addView(text(summary,13,muted));wrapper.addView(activity);
             }
@@ -660,10 +718,11 @@ public final class MainActivity extends Activity {
         }
     }
     private void toolText(LinearLayout parent,String label,String value){parent.addView(text(label,11,muted));TextView body=text(value,12,foreground);body.setTypeface(Typeface.MONOSPACE);body.setHorizontallyScrolling(true);HorizontalScrollView horizontal=new HorizontalScrollView(this);horizontal.addView(body);parent.addView(horizontal);}
-    private View bubble(String content, boolean user) {
+    private View bubble(String content, boolean user,JSONArray files) {
         LinearLayout card = vertical(); card.setPadding(dp(14),dp(8),dp(14),dp(10));
-        card.setBackground(rounded(user?Color.rgb(43,43,43):Color.rgb(27,27,27),20));
-        if(user) card.addView(text(content,16,foreground)); else MessageBody.add(this, card, content, foreground, muted);
+        card.setBackground(rounded(user?surface(43,43,43):surface(27,27,27),20));
+        if(!content.isEmpty()){if(user) card.addView(text(content,16,foreground)); else MessageBody.add(this, card, content, foreground, muted);}
+        chatFiles.add(card,files,currentThread.optString("id"),api);
         LinearLayout wrapper=vertical();LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(user ? -2 : -1, -2); params.gravity = user ? android.view.Gravity.END : android.view.Gravity.START; params.setMargins(user ? dp(32) : 0,dp(10),user?0:dp(12),dp(10));wrapper.addView(card,params);return wrapper;
     }
     private void review(JSONObject approval, String threadId) {
@@ -764,24 +823,24 @@ public final class MainActivity extends Activity {
         } catch (Exception e) { toast("无法读取组网配置，请重装或检查手机密钥存储"); }
     }
     private LinearLayout easyTierCard(LinearLayout parent, String title) {
-        LinearLayout card = vertical(); card.setPadding(dp(16), dp(10), dp(16), dp(16)); card.setBackground(rounded(Color.rgb(31,31,31), 20));
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(10), dp(16), dp(16)); card.setBackground(rounded(surface(31,31,31), 20));
         LinearLayout.LayoutParams spacing = new LinearLayout.LayoutParams(-1, -2); spacing.topMargin = dp(12); parent.addView(card, spacing);
         TextView heading = text(title, 15, foreground); heading.setTypeface(null, Typeface.BOLD); heading.setTextIsSelectable(false); card.addView(heading); return card;
     }
     private void easyTierField(LinearLayout parent, String label, EditText input) {
         TextView heading = text(label, 13, muted); heading.setTextIsSelectable(false); parent.addView(heading);
-        input.setBackground(rounded(Color.rgb(43,43,43), 12)); input.setPadding(dp(14), dp(13), dp(14), dp(13)); parent.addView(input);
+        input.setBackground(rounded(surface(43,43,43), 12)); input.setPadding(dp(14), dp(13), dp(14), dp(13)); parent.addView(input);
         heading.setLabelFor(View.generateViewId()); input.setId(heading.getLabelFor());
     }
     private Button easyTierSecondary(String label) {
-        Button control = button(label); control.setBackground(rounded(Color.rgb(46,46,46), 16)); control.setTextColor(foreground); return control;
+        Button control = button(label); control.setBackground(rounded(surface(46,46,46), 16)); control.setTextColor(foreground); return control;
     }
     private void openEasyTierHelp(String url) {
         try { startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))); }
         catch (android.content.ActivityNotFoundException e) { toast("未找到可打开文档的浏览器"); }
     }
     private void startEasyTier() {
-        try { startForegroundService(new android.content.Intent(this, EasyTierVpnService.class)); toast("正在启动，请在 EasyTier 设置中查看状态"); }
+        try { startForegroundService(new android.content.Intent(this, EasyTierVpnService.class));getPreferences(MODE_PRIVATE).edit().putString("networkMode","easytier").apply(); toast("正在启动，请在 EasyTier 设置中查看状态"); }
         catch (Exception e) { toast("系统未允许启动 VPN 服务，请保持 App 在前台重试"); }
     }
     private void prepareEasyTier() {
@@ -794,9 +853,12 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if(chatFiles.saveResult(request,result,data))return;
+        if(appUpdates!=null&&appUpdates.activityResult(request))return;
         if(request==204){if(result==RESULT_OK&&data!=null&&pairingInput!=null)pairingInput.accept(data.getStringExtra("pairing"));return;}
         if(request==205){if(result==RESULT_OK)PairingCoordinator.start(this);else PairingCoordinator.permissionDenied(this);refreshPairingUi();return;}
         if(request==202){java.util.function.Consumer<Boolean> callback=switchVpnPermission;switchVpnPermission=null;if(callback!=null)callback.accept(result==RESULT_OK);return;}
+        if(request==206){restoreVpnPermission=false;if(result==RESULT_OK)startForegroundService(new android.content.Intent(this,EasyTierVpnService.class));else toast("VPN 未授权，可在 EasyTier 设置中重新连接");return;}
         if (request == 200) { if (result == RESULT_OK) startEasyTier(); else toast("未授予 VPN 权限"); }
     }
     private void beginPolling() { beginPolling(false); }
@@ -823,7 +885,7 @@ public final class MainActivity extends Activity {
                 for (int i = 0; i < values.length(); i++) { JSONObject row = values.getJSONObject(i); rows.put(row.getString("id"), row.optString("name", "桌面聊天")); }
             }
             android.app.Dialog drawer = new android.app.Dialog(this); LinearLayout panel = panel(drawer,"会话");
-            LinearLayout searchBar=new LinearLayout(this);searchBar.setGravity(android.view.Gravity.CENTER_VERTICAL);searchBar.setPadding(dp(14),0,dp(14),0);searchBar.setBackground(rounded(Color.rgb(38,38,38),24));
+            LinearLayout searchBar=new LinearLayout(this);searchBar.setGravity(android.view.Gravity.CENTER_VERTICAL);searchBar.setPadding(dp(14),0,dp(14),0);searchBar.setBackground(rounded(surface(38,38,38),24));
             ImageView searchIcon=new ImageView(this);searchIcon.setImageDrawable(new UiIcon("search",muted));searchBar.addView(searchIcon,new LinearLayout.LayoutParams(dp(20),dp(20)));searchIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             EditText search = field("搜索会话");search.setBackgroundColor(Color.TRANSPARENT);search.setPadding(dp(10),dp(12),0,dp(12));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);searchBar.addView(search,new LinearLayout.LayoutParams(0,dp(48),1));
             LinearLayout.LayoutParams searchSpacing=new LinearLayout.LayoutParams(-1,dp(48));searchSpacing.topMargin=dp(8);searchSpacing.bottomMargin=dp(12);panel.addView(searchBar,searchSpacing);
@@ -833,7 +895,7 @@ public final class MainActivity extends Activity {
                 for(java.util.Map.Entry<String,String> row:rows.entrySet()) {
                     if(!row.getValue().toLowerCase(java.util.Locale.ROOT).contains(query))continue;
                     LinearLayout item=vertical();item.setPadding(dp(14),dp(10),dp(14),dp(10));
-                    if(row.getKey().equals(selectedThreadId))item.setBackground(rounded(Color.rgb(43,43,43),12));
+                    if(row.getKey().equals(selectedThreadId))item.setBackground(rounded(surface(43,43,43),12));
                     TextView name=text(row.getValue(),15,foreground);name.setTextIsSelectable(false);name.setMaxLines(2);item.addView(name);
                     TextView detail=text(row.getKey().equals(selectedThreadId)?"当前会话":"点击继续",11,muted);detail.setTextIsSelectable(false);detail.setPadding(0,0,0,0);item.addView(detail);list.addView(item);
                     item.setOnClickListener(v->{
@@ -856,7 +918,7 @@ public final class MainActivity extends Activity {
     private TextView settingRow(LinearLayout parent,String title,String subtitle,Runnable action) {
         LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setPadding(dp(12),dp(8),dp(12),dp(8));row.setMinimumHeight(dp(76));
         LinearLayout labels=vertical();TextView label=text(title,16,foreground);label.setTextIsSelectable(false);labels.addView(label);TextView description=text(subtitle,12,muted);description.setTextIsSelectable(false);description.setPadding(0,0,0,dp(6));labels.addView(description);row.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
-        ImageView arrow=new ImageView(this);arrow.setImageDrawable(new UiIcon("next",muted));row.addView(arrow,new LinearLayout.LayoutParams(dp(20),dp(20)));row.setBackground(rounded(Color.rgb(31,31,31),14));LinearLayout.LayoutParams spacing=new LinearLayout.LayoutParams(-1,-2);spacing.topMargin=dp(8);parent.addView(row,spacing);row.setOnClickListener(v->action.run());return description;
+        ImageView arrow=new ImageView(this);arrow.setImageDrawable(new UiIcon("next",muted));row.addView(arrow,new LinearLayout.LayoutParams(dp(20),dp(20)));row.setBackground(rounded(surface(31,31,31),14));LinearLayout.LayoutParams spacing=new LinearLayout.LayoutParams(-1,-2);spacing.topMargin=dp(8);parent.addView(row,spacing);row.setOnClickListener(v->action.run());return description;
     }
     private void settingsPage() {
         android.app.Dialog dialog=new android.app.Dialog(this);LinearLayout page=panel(dialog,"设置");ScrollView settingsScroll=new ScrollView(this);LinearLayout items=vertical();settingsScroll.addView(items);page.addView(settingsScroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -864,16 +926,51 @@ public final class MainActivity extends Activity {
         TextView connectionHint=settingRow(items,"连接方式",networkModeLabel(),()->{});((View)connectionHint.getParent()).setOnClickListener(v->connectionSettingsDialog(v));
         settingRow(items,"当前电脑",api==null?"尚未配对":api.address,()->new AlertDialog.Builder(this).setTitle("电脑连接").setMessage(api==null?"尚未配对":api.address+"\n\n"+SessionService.message).setPositiveButton("重新同步",(d,w)->beginPolling(true)).setNegativeButton("关闭",null).show());
         TextView networkHint=settingRow(items,"EasyTier 组网",EasyTierVpnService.state,this::easyTierDialog);
+        settingRow(items,"UI 显示模式",displayModeLabel(),this::displaySettings);
         settingRow(items,"通知与后台运行","任务完成、审批提醒与系统权限",this::notificationSettings);
         settingRow(items,"重新同步","重新连接电脑并刷新聊天状态",()->{beginPolling(true);toast("正在重新同步");});
         settingRow(items,"查看连接引导","预览扫码与配对页面，保留当前连接",()->{dialog.dismiss();connectionPage();});
         items.addView(text("关于",13,muted));items.addView(text("Codex LAN · "+appVersion()+"\n非官方远控客户端",14,muted));
+          settingRow(items,"检测更新","主／次版本提醒、GitHub 下载与电脑插件更新",appUpdates::open);
         settingRow(items,"清除本机配对","删除本机连接信息，重新配对电脑",()->new AlertDialog.Builder(this).setTitle("清除本机配对？").setMessage("手机上的连接信息将删除。电脑端的授权记录仍需在电脑撤销；EasyTier 配置保留。")
             .setNegativeButton("返回",null).setPositiveButton("清除",(d,w)->{generation++;api.cancel();stopService(new android.content.Intent(this,SessionService.class));SessionService.latest=null;api=null;currentState=null;selectedThreadId="";drafts.clear();storage.clear();dialog.dismiss();connectionPage();}).show());
         android.os.Handler refresh=new android.os.Handler(getMainLooper());Runnable networkRefresh=new Runnable(){public void run(){networkHint.setText(EasyTierVpnService.state);if(dialog.isShowing())refresh.postDelayed(this,1000);}};dialog.setOnDismissListener(d->refresh.removeCallbacks(networkRefresh));
         dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(-1,-1);refresh.post(networkRefresh);
     }
     private String appVersion(){try{return getPackageManager().getPackageInfo(getPackageName(),0).versionName;}catch(Exception ignored){return "Preview";}}
+    private android.content.SharedPreferences displayPreferences(){return getSharedPreferences("display",MODE_PRIVATE);}
+    private String displayModeLabel(){android.content.SharedPreferences p=displayPreferences();return p.getBoolean("solar",false)?"日出日落自动切换 · "+p.getString("city","所选位置"):"light".equals(p.getString("mode","dark"))?"明亮模式":"黑色模式";}
+    private void displaySettings(){
+        android.content.SharedPreferences p=displayPreferences();android.app.Dialog dialog=new android.app.Dialog(this);LinearLayout page=panel(dialog,"UI 显示模式");
+        page.addView(text("选择适合当前光线的外观",14,muted));RadioGroup modes=new RadioGroup(this);
+        RadioButton dark=new RadioButton(this),light=new RadioButton(this);dark.setId(View.generateViewId());light.setId(View.generateViewId());dark.setText("黑色模式");light.setText("明亮模式");
+        for(RadioButton item:new RadioButton[]{dark,light}){item.setTextColor(foreground);item.setPadding(dp(12),dp(12),dp(12),dp(12));modes.addView(item);}
+        modes.check("light".equals(p.getString("mode","dark"))?light.getId():dark.getId());page.addView(modes);
+        android.widget.Switch automatic=new android.widget.Switch(this);automatic.setText("自动随日出日落改变");automatic.setTextColor(foreground);automatic.setPadding(dp(12),dp(20),dp(12),dp(20));automatic.setChecked(p.getBoolean("solar",false));page.addView(automatic);
+        page.addView(text("日出后使用明亮模式，日落后使用黑色模式。按所选城市在本机计算，无需后台定位或联网。关闭自动切换后，恢复上面选择的外观。",13,muted));
+        settingRow(page,"日出日落所在城市",p.getString("city","尚未选择"),()->chooseThemeCity(()->{dialog.dismiss();recreate();}));
+        modes.setOnCheckedChangeListener((group,id)->{p.edit().putString("mode",id==light.getId()?"light":"dark").putBoolean("solar",false).apply();dialog.dismiss();recreate();});
+        final boolean[] updating={false};automatic.setOnCheckedChangeListener((control,checked)->{
+            if(updating[0])return;
+            if(checked&&!p.contains("latitude")){updating[0]=true;automatic.setChecked(false);updating[0]=false;chooseThemeCity(()->{p.edit().putBoolean("solar",true).apply();dialog.dismiss();recreate();});return;}
+            p.edit().putBoolean("solar",checked).apply();dialog.dismiss();recreate();
+        });
+        dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(-1,-1);
+    }
+    private void saveThemeCity(String city,double latitude,double longitude,Runnable done){
+        if(!Double.isFinite(latitude)||!Double.isFinite(longitude)||Math.abs(latitude)>90||Math.abs(longitude)>180){toast("纬度范围 -90～90，经度范围 -180～180");return;}
+        displayPreferences().edit().putString("city",city).putLong("latitude",Double.doubleToLongBits(latitude)).putLong("longitude",Double.doubleToLongBits(longitude)).apply();done.run();
+    }
+    private void chooseThemeCity(Runnable done){
+        String[] cities={"北京","上海","广州","深圳","成都","杭州","武汉","西安","乌鲁木齐","自定义经纬度"};
+        double[][] points={{39.90,116.40},{31.23,121.47},{23.13,113.26},{22.54,114.06},{30.57,104.07},{30.27,120.15},{30.59,114.31},{34.34,108.94},{43.83,87.62}};
+        new AlertDialog.Builder(this).setTitle("日出日落所在城市").setItems(cities,(d,index)->{
+            if(index<points.length){saveThemeCity(cities[index],points[index][0],points[index][1],done);return;}
+            LinearLayout form=vertical();form.setPadding(dp(20),dp(4),dp(20),dp(8));EditText name=field("城市名称"),lat=field("纬度，例如 31.23"),lon=field("经度，例如 121.47");
+            int type=android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL|android.text.InputType.TYPE_NUMBER_FLAG_SIGNED;lat.setInputType(type);lon.setInputType(type);form.addView(name);form.addView(lat);form.addView(lon);
+            AlertDialog custom=new AlertDialog.Builder(this).setTitle("自定义位置").setView(form).setNegativeButton("取消",null).setPositiveButton("保存",null).create();custom.setOnShowListener(v->custom.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{try{double latitude=Double.parseDouble(lat.getText().toString()),longitude=Double.parseDouble(lon.getText().toString());if(Math.abs(latitude)>90||Math.abs(longitude)>180)throw new Exception();saveThemeCity(name.getText().toString().trim().isEmpty()?"自定义位置":name.getText().toString().trim(),latitude,longitude,()->{custom.dismiss();done.run();});}catch(Exception error){toast("请输入有效的经纬度");}}));custom.show();
+        }).show();
+    }
     private void notificationSettings() {
         new AlertDialog.Builder(this).setTitle("通知与后台同步")
             .setItems(new String[]{"隐藏后台同步运行提示", "隐藏 EasyTier 运行提示", "任务完成：横幅/锁屏提醒", "需要审批：横幅/锁屏提醒", "全部通知类别与权限", "HyperOS 后台/省电设置"}, (dialog, which) -> {
@@ -908,7 +1005,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
-        if(android.content.Intent.ACTION_MAIN.equals(intent.getAction())&&intent.hasCategory(android.content.Intent.CATEGORY_LAUNCHER))showLaunchAnimation();
+        if(android.content.Intent.ACTION_MAIN.equals(intent.getAction())&&intent.hasCategory(android.content.Intent.CATEGORY_LAUNCHER)){showLaunchAnimation();appUpdates.launch();}
         refreshPairingUi();
         String id = intent.getStringExtra("threadId"); if (id != null && !id.isEmpty() && !id.equals(selectedThreadId)) {
             if(composer != null)drafts.put(selectedThreadId,composer.getText().toString()); selectedThreadId = id;
@@ -925,12 +1022,16 @@ public final class MainActivity extends Activity {
     private void toast(String value) { Toast.makeText(this, value, Toast.LENGTH_LONG).show(); }
     @Override protected void onStart() {
         super.onStart(); visible = true;
+        if(appUpdates!=null)appUpdates.resume();
         android.content.IntentFilter filter = new android.content.IntentFilter(SessionService.UPDATE);filter.addAction(PairingCoordinator.UPDATE);filter.addAction(SessionService.USAGE_UPDATE);
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(updates, filter, RECEIVER_NOT_EXPORTED); else registerReceiver(updates, filter);
         refreshPairingUi();
         if(api==null&&connectionGuideVisible&&!PairingCoordinator.busy()&&!PairingCoordinator.failed())try{JSONObject pending=PairingCoordinator.pending(this);if(pending!=null&&"waiting".equals(pending.optString("phase"))&&android.net.VpnService.prepare(this)==null)PairingCoordinator.start(this);}catch(Exception ignored){}
-        if (api != null) beginPolling();
+        if (api != null) {restoreSavedNetwork();beginPolling();}
+        renderHandler.post(themeClock);
     }
-    @Override protected void onStop() { visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } sending = false; dismissRailPreview();dismissModelPopup();if(usagePopup!=null)usagePopup.dismiss();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
-    @Override protected void onDestroy() { generation++;renderRevision++;renderHandler.removeCallbacks(prepareRows);renderHandler.removeCallbacks(flushRows);renderWorker.shutdownNow(); if (api != null) api.cancel(); worker.shutdownNow(); super.onDestroy(); }
+    @Override protected void onStop() { renderHandler.removeCallbacks(themeClock);if(!restoreVpnPermission)networkRestoreAttempted=false;visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } commands.clear();for(RemoteApi channel:commandChannels.values())channel.cancel();commandChannels.clear(); dismissRailPreview();dismissModelPopup();if(usagePopup!=null)usagePopup.dismiss();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
+    @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused&&appUpdates!=null)appUpdates.focus();}
+    @Override public void startActivityForResult(android.content.Intent intent,int request,Bundle options){if(appUpdates!=null)appUpdates.external();try{super.startActivityForResult(intent,request,options);}catch(RuntimeException e){if(appUpdates!=null)appUpdates.navigationFailed();throw e;}}
+    @Override protected void onDestroy() { generation++;renderRevision++;renderHandler.removeCallbacks(prepareRows);renderHandler.removeCallbacks(flushRows);renderWorker.shutdownNow();chatFiles.close();if(appUpdates!=null)appUpdates.close(); if (api != null) api.cancel(); worker.shutdownNow(); super.onDestroy(); }
 }

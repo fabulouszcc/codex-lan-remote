@@ -9,6 +9,15 @@ import android.widget.PopupWindow;
 
 /** Shared floating menus grow from the control which opened them. */
 final class AnchoredMenu {
+    static PopupWindow below(Activity activity,View anchor,View content,int desiredWidth){
+        float density=activity.getResources().getDisplayMetrics().density;Rect frame=new Rect();anchor.getWindowVisibleDisplayFrame(frame);
+        int width=Math.min(desiredWidth,frame.width()-Math.round(24*density));
+        PopupWindow popup=new PopupWindow(content,width,-2,true);popup.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));popup.setElevation(12*density);popup.setOutsideTouchable(true);popup.setOverlapAnchor(false);popup.setAnimationStyle(0);popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
+        // Let PopupWindow convert the dialog's window coordinates itself.
+        popup.showAsDropDown(anchor,0,Math.round(8*density),Gravity.START);
+        if(android.animation.ValueAnimator.areAnimatorsEnabled()){content.setPivotX(0);content.setPivotY(0);content.setAlpha(0);content.setScaleX(.94f);content.setScaleY(.94f);content.animate().alpha(1).scaleX(1).scaleY(1).setDuration(160).setInterpolator(new android.view.animation.DecelerateInterpolator()).start();}
+        return popup;
+    }
     static void resize(Activity activity,View anchor,View content,PopupWindow popup){
         if(popup==null||!popup.isShowing())return;
         int margin=Math.round(12*activity.getResources().getDisplayMetrics().density);Rect frame=new Rect();activity.getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);

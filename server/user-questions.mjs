@@ -3,6 +3,9 @@ import { userText } from './turn-timeline.mjs';
 
 export function pendingQuestions(state) {
   const turns = getTurns(state), answered = new Set();
+  const active=turns.findLast(turn=>turn.status==='inProgress');
+  if(!active)return [];
+  const completed=new Set((active.items||[]).filter(item=>item.type==='userInputResponse'&&item.completed===true).map(item=>String(item.requestId)));
   for (const turn of turns) for (const item of turn.items || []) {
     if (!['userMessage', 'steeringUserMessage'].includes(item.type)) continue;
     if (item.type === 'steeringUserMessage' && item.status && item.status !== 'accepted') continue;
@@ -13,12 +16,13 @@ export function pendingQuestions(state) {
       for (const reply of Array.isArray(parsed) ? parsed : [parsed]) answered.add(reply.questionItemId);
     } catch { /* Malformed user text is never treated as a response. */ }
   }
-  const rows = (state?.requests || []).filter(r => /requestUserInput/.test(r.type || r.method || '')).map(r => ({
+  const rows = (state?.requests || []).filter(r => /requestUserInput/.test(r.type || r.method || '')
+    && (!r.params?.turnId||r.params.turnId===active.turnId) && !completed.has(String(r.id??r.requestId))).map(r => ({
     id: r.id ?? r.requestId, kind: 'native', turnId: r.params?.turnId,
     questions: (r.params?.questions || []).map(q => ({ id: q.id, title: q.question, header: q.header,
       isOther: !!q.isOther, isSecret: !!q.isSecret, options: (q.options || []).map(o => ({ label: o.label, description: o.description || '' })) }))
   }));
-  for (const turn of turns.filter(t => t.status === 'inProgress')) for (const item of turn.items || []) {
+  for (const turn of [active]) for (const item of turn.items || []) {
     if (item.type !== 'agentMessage') continue;
     const questions = (item.questions || []).map((q, i) => ({ id: JSON.stringify(['request_user_input_async', item.id, i]),
       title: q.title, isOther: true, options: (q.options || []).map(label => ({ label, description: '' })) })).filter(q => !answered.has(q.id));

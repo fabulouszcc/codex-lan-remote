@@ -7,6 +7,7 @@ import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
 import { createGateway } from '../server/gateway.mjs';
 import { atomicJson, readJson, addresses } from './config.mjs';
+import { desktopVersion } from './version.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 async function createCertificate(input) {
   return new Promise((resolve, reject) => {
@@ -45,7 +46,7 @@ export class GatewayRuntime {
     const historyReader = config.codexBinary ? new HistoryReader(config.codexBinary) : undefined;
     const bridge = new DesktopBridge(config.threads, { historyReader, allowSelectedChats: config.allowSelectedChats });
     const connectionAddresses={ primary:`https://${config.host}:${config.port}`, ...(config.lanHost ? {lan:`https://${config.lanHost}:${config.port}`} : {}) };
-    const gateway = createGateway({ tls: this.tls, bridge, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
+    const gateway = createGateway({ tls: this.tls, bridge, desktopVersion, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
     const servers=[gateway.server];
     gateway.server.on('controlAction', event => { void appendFile(join(this.root, 'actions.local.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 }).catch(() => {}); });
     try {

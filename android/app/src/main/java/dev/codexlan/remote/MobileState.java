@@ -123,6 +123,7 @@ final class MobileState {
         JSONObject result = new JSONObject().put("threads", new JSONArray(threads.values()));
         if (previous != null) result.put("selectedThreadId", previous.optString("selectedThreadId"));
         if (incoming != null) result.put("version", incoming.optLong("version")).put("savedAt", System.currentTimeMillis());
+        if(incoming!=null&&incoming.has("desktopVersion"))result.put("desktopVersion",incoming.optString("desktopVersion"));else if(previous!=null)result.put("desktopVersion",previous.optString("desktopVersion"));
         JSONObject connections=incoming==null?null:incoming.optJSONObject("connectionAddresses");if(connections==null&&previous!=null)connections=previous.optJSONObject("connectionAddresses");if(connections!=null)result.put("connectionAddresses",connections);
         return result;
     }

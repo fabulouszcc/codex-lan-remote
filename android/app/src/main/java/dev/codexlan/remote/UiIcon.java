@@ -11,6 +11,13 @@ final class UiIcon extends Drawable {
     @Override public void draw(Canvas canvas) {
         canvas.save(); canvas.translate(getBounds().left, getBounds().top); canvas.scale(getBounds().width()/24f, getBounds().height()/24f);
         switch (name) {
+            case "phone": canvas.drawRoundRect(6,2,18,22,3,3,paint);line(canvas,10,5,14,5);line(canvas,11,19,13,19);break;
+            case "desktop": canvas.drawRoundRect(2,3,22,17,2,2,paint);line(canvas,12,17,12,22);line(canvas,7,22,17,22);break;
+            case "download": line(canvas,12,3,12,15);line(canvas,7,10,12,15);line(canvas,12,15,17,10);line(canvas,4,16,4,21);line(canvas,4,21,20,21);line(canvas,20,21,20,16);break;
+            case "close": line(canvas,6,6,18,18);line(canvas,18,6,6,18);break;
+            case "more": for(int i=0;i<3;i++)canvas.drawCircle(5+i*7,12,1,paint);break;
+            case "file": Path file=new Path();file.moveTo(7,3);file.lineTo(14,3);file.lineTo(19,8);file.lineTo(19,21);file.lineTo(5,21);file.lineTo(5,3);file.close();canvas.drawPath(file,paint);line(canvas,14,3,14,8);line(canvas,14,8,19,8);line(canvas,8,13,16,13);line(canvas,8,17,14,17);break;
+            case "image": canvas.drawRoundRect(3,3,21,21,3,3,paint);canvas.drawCircle(8,8,1.4f,paint);line(canvas,4,18,10,12);line(canvas,10,12,14,16);line(canvas,14,16,17,13);line(canvas,17,13,21,17);break;
             case "scan": line(canvas,4,9,4,4);line(canvas,4,4,9,4);line(canvas,15,4,20,4);line(canvas,20,4,20,9);line(canvas,20,15,20,20);line(canvas,20,20,15,20);line(canvas,9,20,4,20);line(canvas,4,20,4,15);line(canvas,7,12,17,12);break;
             case "bolt-filled": Path bolt=new Path();bolt.moveTo(13,3);bolt.lineTo(5,13);bolt.lineTo(11,13);bolt.lineTo(9,21);bolt.lineTo(19,10);bolt.lineTo(13,10);bolt.close();paint.setStyle(Paint.Style.FILL);canvas.drawPath(bolt,paint);paint.setStyle(Paint.Style.STROKE);break;
             case "search": canvas.drawCircle(10.5f,10.5f,6.5f,paint);line(canvas,15.5f,15.5f,20,20);break;

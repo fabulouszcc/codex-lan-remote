@@ -2,6 +2,7 @@ import https from 'node:https';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { mobileStateWindow } from './state-sync.mjs';
+import { findChatFile, readChatFile } from './chat-files.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 function fail(status, message) { return Object.assign(new Error(message), { status }); }
@@ -31,7 +32,7 @@ function reply(response, status, value) {
 }
 
 // No generic RPC proxy. Only explicitly configured chats and supported operations.
-export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
+export function createGateway({ tls, bridge, desktopVersion = '', deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
   const sessions = new Map(devices.map(device => [device.tokenHash, device]));
   const syncWindows = new Map();
   let pairingUntil = now() + pairingTtlMs;
@@ -46,7 +47,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
     persistence = operation;
     return operation;
   };
-  let version = 0;
+  let version = 0, fileReads = 0;
   const waiters = new Set();
   let publishTimer;
   // Full mobile snapshots are coalesced; never resend the last 50 turns per token.
@@ -65,7 +66,7 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
       if (request.headers.origin || request.headers['sec-fetch-site']) throw fail(403, '仅允许已配对客户端');
       const url = new URL(request.url, 'https://localhost');
       if (request.method === 'GET' && url.pathname === '/v1/info') {
-        reply(response, 200, { protocol: 1, deviceName, deviceId, pairingOpen: now() < pairingUntil }); return;
+        reply(response, 200, { protocol: 1, desktopVersion, deviceName, deviceId, pairingOpen: now() < pairingUntil }); return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/pair') {
         if (now() >= pairingUntil) throw fail(403, '配对码已过期，请重启连接服务生成新码');
@@ -92,6 +93,19 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
       const sessionHash = token && hash(token);
       if (!sessionHash || !sessions.has(sessionHash)) throw fail(401, '请先配对');
       sessions.get(sessionHash).lastSeen = now();
+      if (request.method === 'GET' && url.pathname === '/v1/file') {
+        const thread=bridge.snapshot().find(thread=>thread.id===url.searchParams.get('threadId'));
+        if(!thread)throw fail(403,'聊天不在授权范围内');
+        const reference=findChatFile(thread,url.searchParams.get('id'));
+        if(fileReads>=2)throw fail(429,'文件正在读取，请稍后重试');
+        fileReads++;
+        try{
+          const bytes=await readChatFile(reference,bridge.fileRoot?.(thread.id));
+          if(!sessions.has(sessionHash))throw fail(401,'设备授权已撤销');
+          if(response.destroyed)return;
+          response.writeHead(200,{'content-type':'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff','content-length':bytes.length});response.end(bytes);return;
+        }finally{fileReads--;}
+      }
       if (request.method === 'DELETE' && url.pathname === '/v1/session') {
         try { await mutateSessions(() => sessions.delete(sessionHash)); } catch { throw fail(500, '撤销失败'); }
         syncWindows.delete(sessionHash);
@@ -126,8 +140,8 @@ export function createGateway({ tls, bridge, deviceName = 'Codex 电脑', device
         if (url.searchParams.get('delta') === '1') {
           const result = mobileStateWindow(bridge.snapshot(), syncWindows.get(sessionHash), version, url.searchParams.get('after'));
           syncWindows.set(sessionHash, result.baseline);
-          reply(response, 200, { version, deviceId, connectionAddresses, ...result.payload });
-        } else reply(response, 200, { version, deviceId, connectionAddresses, threads: bridge.snapshot() });
+          reply(response, 200, { version, desktopVersion, deviceId, connectionAddresses, ...result.payload });
+        } else reply(response, 200, { version, desktopVersion, deviceId, connectionAddresses, threads: bridge.snapshot() });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {

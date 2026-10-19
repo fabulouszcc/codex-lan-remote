@@ -4,13 +4,16 @@ import { EventEmitter, once } from 'node:events';
 import https from 'node:https';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import { createGateway } from '../server/gateway.mjs';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { gunzipSync } from 'node:zlib';
+import { fileReference } from '../server/chat-files.mjs';
+
+
 
 const directory = await mkdtemp(join(tmpdir(), 'codex-lan-tls-'));
 const keytool = process.env.CODEX_LAN_TEST_KEYTOOL || (process.platform === 'win32'
@@ -31,6 +34,9 @@ class FakeBridge extends EventEmitter {
   async modelOptions(){return {models:[{model:'available',efforts:['high']}],current:{model:'available',effort:'high'}};}
   async command(id, command) { this.count++; await new Promise(resolve => setTimeout(resolve, 20)); return { accepted: true, text: command.text }; }
 }
+test('installed desktop version is advertised separately from sync revision',async t=>{
+  const f=await fixture(t,{desktopVersion:'0.5.0'});const info=await f.request('GET','/v1/info');assert.equal(info.data.desktopVersion,'0.5.0');const token=await f.pair();const state=await f.request('GET','/v1/state',undefined,{authorization:'Bearer '+token});assert.equal(state.data.desktopVersion,'0.5.0');assert.equal(typeof state.data.version,'number');
+});
 test('model discovery requires pairing and a known chat',async t=>{
   const {request,pair}=await fixture(t);assert.equal((await request('GET','/v1/models?threadId=allowed-chat')).status,401);
   const token=await pair(),headers={authorization:`Bearer ${token}`};
@@ -55,7 +61,7 @@ async function fixture(t, options = {}) {
       ca: trust ? certificate.toString() : undefined,
       headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...headers } }, response => {
       const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => {
-        try { const raw=Buffer.concat(chunks);resolve({ status: response.statusCode, data: JSON.parse(response.headers['content-encoding']==='gzip'?gunzipSync(raw):raw), encoding:response.headers['content-encoding'],wireBytes:raw.length }); } catch (error) { reject(error); }
+        try { const raw=Buffer.concat(chunks);resolve({ status: response.statusCode, data: response.headers['content-type']==='application/octet-stream'?raw:JSON.parse(response.headers['content-encoding']==='gzip'?gunzipSync(raw):raw), encoding:response.headers['content-encoding'],wireBytes:raw.length }); } catch (error) { reject(error); }
       });
     }); req.on('error', reject); req.end(payload);
   });
@@ -181,4 +187,17 @@ test('catalog and selection require pairing and never accept an arbitrary thread
   assert.equal((await f.request('POST', '/v1/select', { threadId: 'arbitrary-private-id' }, headers)).status, 403);
   assert.equal((await f.request('POST', '/v1/select', { threadId: 'allowed-chat' }, headers)).status, 200);
   assert.equal(f.bridge.count, 0);
+});
+
+test('file bytes require pairing and an exact file reference in the authorized chat',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'gateway-file-'));t.after(()=>rm(root,{recursive:true,force:true}));await writeFile(join(root,'result.txt'),'preview');
+  const f=await fixture(t),ref=fileReference(join(root,'result.txt'));
+  f.bridge.snapshot=()=>[{id:'allowed-chat',turns:[{timeline:[{files:[ref]}]}]}];
+  const route='/v1/file?threadId=allowed-chat&id='+ref.id;
+  assert.equal((await f.request('GET',route)).status,401);
+  const token=await f.pair(),headers={authorization:'Bearer '+token};
+  assert.equal((await f.request('GET',route,undefined,headers)).data.toString(),'preview');
+  assert.equal((await f.request('GET','/v1/file?threadId=other&id='+ref.id,undefined,headers)).status,403);
+  assert.equal((await f.request('GET','/v1/file?threadId=allowed-chat&id=unknown&path='+encodeURIComponent(join(root,'result.txt')),undefined,headers)).status,403);
+  await f.gateway.revokeDevice(f.gateway.listDevices()[0].id);assert.equal((await f.request('GET',route,undefined,headers)).status,401);
 });
