@@ -1,7 +1,7 @@
 import https from 'node:https';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { mobileStateWindow } from './state-sync.mjs';
+import { mobileStateWindow,prioritizeThreads } from './state-sync.mjs';
 import { findChatFile, readChatFile } from './chat-files.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -35,6 +35,7 @@ function reply(response, status, value) {
 export function createGateway({ tls, bridge, desktopVersion = '', deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
   const sessions = new Map(devices.map(device => [device.tokenHash, device]));
   const syncWindows = new Map();
+  const selections=new Map();
   let pairingUntil = now() + pairingTtlMs;
   const attempts = new Map(); const idempotency = new Map(); const locks = new Map();
   let persistence = Promise.resolve();
@@ -47,7 +48,7 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
     persistence = operation;
     return operation;
   };
-  let version = 0, fileReads = 0;
+  let version = 0, fileReads = 0, historyReads = 0;
   const waiters = new Set();
   let publishTimer;
   // Full mobile snapshots are coalesced; never resend the last 50 turns per token.
@@ -108,11 +109,25 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
       }
       if (request.method === 'DELETE' && url.pathname === '/v1/session') {
         try { await mutateSessions(() => sessions.delete(sessionHash)); } catch { throw fail(500, '撤销失败'); }
-        syncWindows.delete(sessionHash);
+        syncWindows.delete(sessionHash);selections.delete(sessionHash);
         changed(); reply(response, 200, { revoked: true }); return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/threads') {
-        reply(response, 200, { threads: await bridge.catalog() }); return;
+        reply(response, 200, { threads: await bridge.catalog(),canCreateThreads:!!bridge.allowSelectedChats&&!!bridge.chatCreator }); return;
+      }
+      if(request.method==='POST'&&url.pathname==='/v1/threads/new'){
+        const input=await body(request),id=request.headers['idempotency-key'];
+        if(typeof input.baseThreadId!=='string'||input.name!==undefined&&(typeof input.name!=='string'||input.name.length>80))throw fail(400,'请选择项目，会话名称最多 80 字符');
+        if(typeof id!=='string'||!/^[a-zA-Z0-9-]{16,80}$/.test(id))throw fail(400,'缺少有效操作编号');
+        const key=`${sessionHash}:${id}`,payloadHash=hash(JSON.stringify({operation:'new-thread',...input}));let operation=idempotency.get(key);
+        if(operation&&operation.payloadHash!==payloadHash)throw fail(409,'操作编号已被其他请求使用');
+        if(!operation){if(idempotency.size>=2000)throw fail(429,'操作缓存已满，请重启服务');operation={payloadHash,promise:Promise.resolve().then(()=>{if(!sessions.has(sessionHash))throw fail(401,'设备授权已撤销');return bridge.createThread(input);})};idempotency.set(key,operation);}
+        try{const created=await operation.promise;selections.set(sessionHash,created.id);reply(response,200,created);}catch(error){throw fail(error.status||409,error.message);}return;
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/history') {
+        if(historyReads>=2)throw fail(429,'历史正在同步，请稍后重试');historyReads++;
+        try { const thread=await bridge.history(url.searchParams.get('threadId'));if(!sessions.has(sessionHash))throw fail(401,'设备授权已撤销');reply(response,200,{thread}); }
+        catch(error){throw fail(error.status||403,error.message);}finally{historyReads--;}return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/usage') {
         reply(response, 200, await bridge.usage()); return;
@@ -125,7 +140,8 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
       if (request.method === 'POST' && url.pathname === '/v1/select') {
         const input = await body(request);
         if (typeof input.threadId !== 'string') throw fail(400, '需要聊天 ID');
-        try { await bridge.openThread(input.threadId); } catch (error) { throw fail(403, error.message); }
+        try { await bridge.openThread(input.threadId); } catch (error) { throw fail(error.code==='THREAD_NOT_FOUND'?404:403, error.message); }
+        selections.set(sessionHash,input.threadId);
         changed(); reply(response, 200, { selected: input.threadId }); return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/state') {
@@ -138,16 +154,16 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
         }
         if (!sessions.has(sessionHash)) throw fail(401, '设备授权已撤销');
         if (url.searchParams.get('delta') === '1') {
-          const result = mobileStateWindow(bridge.snapshot(), syncWindows.get(sessionHash), version, url.searchParams.get('after'));
+          const result = mobileStateWindow(prioritizeThreads(bridge.snapshot(),selections.get(sessionHash)), syncWindows.get(sessionHash), version, url.searchParams.get('after'));
           syncWindows.set(sessionHash, result.baseline);
           reply(response, 200, { version, desktopVersion, deviceId, connectionAddresses, ...result.payload });
-        } else reply(response, 200, { version, desktopVersion, deviceId, connectionAddresses, threads: bridge.snapshot() });
+        } else reply(response, 200, { version, desktopVersion, deviceId, connectionAddresses, threads: prioritizeThreads(bridge.snapshot(),selections.get(sessionHash)) });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {
         const input = await body(request);
-        if (typeof input.threadId !== 'string' || !['start', 'steer', 'interrupt', 'approve', 'model', 'answer'].includes(input.op)) throw fail(400, '不支持的操作');
-        if (['start', 'steer'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000)) throw fail(400, '消息应为 1–16000 字符');
+        if (typeof input.threadId !== 'string' || !['start', 'steer', 'queue', 'queue-remove', 'interrupt', 'approve', 'model', 'answer'].includes(input.op)) throw fail(400, '不支持的操作');
+        if (['start', 'steer','queue'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000)) throw fail(400, '消息应为 1–16000 字符');
         if (!bridge.snapshot().some(thread => thread.id === input.threadId)) throw fail(403, '聊天不在授权范围内');
         const id = request.headers['idempotency-key'];
         if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(id)) throw fail(400, '缺少有效操作编号');
@@ -190,7 +206,7 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
     async revokeDevice(id) {
       const key = [...sessions.keys()].find(key => key.slice(0, 24) === id);
       if (!key) throw fail(404, '设备不存在');
-      await mutateSessions(() => sessions.delete(key)); syncWindows.delete(key); changed(); return { revoked: true };
+      await mutateSessions(() => sessions.delete(key)); syncWindows.delete(key);selections.delete(key); changed(); return { revoked: true };
     },
   };
 }

@@ -6,6 +6,14 @@ import { join } from 'node:path';
 import { fileReference, messageFiles, findChatFile, readChatFile } from '../server/chat-files.mjs';
 import { turnTimeline } from '../server/turn-timeline.mjs';
 
+test('Codex file citations become deduplicated file cards and retain path restrictions',()=>{
+  const text=String.raw`已处理完成。 :codex-file-citation{path="C:\Temp\报告.docx" purpose="output"} [报告](C:/Temp/报告.docx)`;
+  const files=messageFiles(text);assert.equal(files.length,1);assert.equal(files[0].name,'报告.docx');
+  assert.equal(messageFiles(':codex-file-citation{path="C:/Temp/.env" purpose="output"}').length,0);
+  assert.equal(messageFiles(':codex-file-citation{path="https://example.com/report.xlsx"}').length,0);
+  for(const name of ['book.xlsx','slides.pptx','notes.odt','table.ods','slides.odp','note.rtf'])assert.ok(fileReference('C:/Temp/'+name));
+});
+
 test('only explicit local file links and image attachments become capabilities',()=>{
   const rows=turnTimeline([{type:'userMessage',content:[{type:'localImage',path:'/tmp/photo.png'}]},
     {type:'agentMessage',text:'[report](</tmp/a report.pdf>) and [code](/tmp/app.py:12)'},

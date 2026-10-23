@@ -1,0 +1,10 @@
+Offline speech recognition uses Vosk Android 0.3.75 and vosk-model-small-cn-0.22.
+Vosk: Copyright Alpha Cephei Inc., Apache License 2.0.
+https://github.com/alphacep/vosk-api
+https://alphacephei.com/vosk/models
+
+JNA 5.18.1 is used under its Apache License 2.0 option.
+https://github.com/java-native-access/jna
+
+Apache License 2.0 text: see zxing-LICENSE.txt in this assets directory.
+The Chinese model is downloaded only after user confirmation, into private app storage.

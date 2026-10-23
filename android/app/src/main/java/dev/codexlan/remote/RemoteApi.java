@@ -16,6 +16,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
 final class RemoteApi {
+    static final class ApiException extends Exception {final int status;ApiException(int status,String message){super(message);this.status=status;}}
     final String address;
     final String fingerprint;
     volatile String token;
@@ -81,7 +82,7 @@ final class RemoteApi {
                 while ((read = input.read(buffer)) != -1) { if (bytes.size() + read > 8 * 1024 * 1024) throw new Exception("返回内容过大"); bytes.write(buffer, 0, read); }
             }
             JSONObject result = new JSONObject(bytes.toString("UTF-8"));
-            if (status != 200) throw new Exception(result.optString("error", "请求失败（" + status + "）"));
+            if (status != 200) throw new ApiException(status,result.optString("error", "请求失败（" + status + "）"));
             return result;
         } finally { connections.remove(connection); connection.disconnect(); }
     }

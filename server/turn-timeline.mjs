@@ -26,13 +26,13 @@ export function turnTimeline(items = []) {
     ? value.filter(block => ['text','input_text','inputText'].includes(block?.type) && typeof block.text === 'string').map(block => block.text).join('\n') : '';
   return items.flatMap((item, index) => {
     if (!item || typeof item !== 'object') return [];
-    if (item.type === 'userMessage') { const text=userText(item.content);return [{ id: item.id || `user:${index}`, type: 'user', text, files:messageFiles(text,item.content) }]; }
+    if (item.type === 'userMessage') { const text=userText(item.content);return [{ id: item.id || `user:${index}`, ...(item.clientId?{clientMessageId:item.clientId}:{}), type: 'user', text, files:messageFiles(text,item.content) }]; }
     if (item.type === 'steeringUserMessage') {
       const replaced = canonicalUsers.some(user =>
         (item.serverUserMessageId && user.id === item.serverUserMessageId) ||
         (item.clientUserMessageId && user.clientId === item.clientUserMessageId) ||
         (item.serverClientUserMessageId && user.clientId === item.serverClientUserMessageId));
-      const text=userText(item.input);return replaced ? [] : [{ id: item.id || `steer:${index}`, type: 'user', text, files:messageFiles(text,item.input) }];
+      const text=userText(item.input);return replaced ? [] : [{ id: item.id || `steer:${index}`, ...(item.clientUserMessageId?{clientMessageId:item.serverClientUserMessageId||item.clientUserMessageId}:{}), type: 'user', text, files:messageFiles(text,item.input) }];
     }
     if (item.type === 'agentMessage') {const text=item.text || (item.questions || []).map(q => q.title).join('\n\n');return [{ id: item.id || `message:${index}`, type: 'message', text, phase: item.phase, files:messageFiles(text) }];}
     if (!toolTypes.has(item.type)) return [];

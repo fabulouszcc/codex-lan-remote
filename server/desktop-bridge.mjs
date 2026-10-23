@@ -1,14 +1,17 @@
 import { EventEmitter } from 'node:events';
 import { DesktopIpcClient } from './desktop-ipc.mjs';
-import { ThreadState, getTurns, summarizeThread } from './thread-state.mjs';
+import { ThreadState, getTurns, summarizeThread, activeTurn } from './thread-state.mjs';
 import { pendingQuestions, validateAnswers } from './user-questions.mjs';
+import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
-  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader, allowSelectedChats = false } = {}) {
+  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
     super();
     this.entries = new Map(threads.map(thread => [thread.id, { ...thread, writable: true, history: [], store: new ThreadState(), ready: false, consumed: new Set() }]));
     this.historyReader = historyReader;
+    this.backgroundHistoryReader=backgroundHistoryReader;
     this.allowSelectedChats = allowSelectedChats;
+    this.chatCreator=chatCreator;
     this.catalogRows = threads;
     this.clientFactory = clientFactory;
     this.generation = 0;
@@ -25,6 +28,7 @@ export class DesktopBridge extends EventEmitter {
     for (const entry of this.entries.values()) { entry.ready = false; }
     const client = this.clientFactory({ controlThreadIds: [...this.entries.values()].filter(entry => entry.writable).map(entry => entry.id), timeoutMs: 30000 });
     this.client = client;
+    client.on('queuedMessages',({conversationId,messages})=>{if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;entry.nativeQueue=messages;entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');});
     client.on('threadState', ({ conversationId, change }) => {
       if (generation !== this.generation) return;
       const entry = this.entries.get(conversationId);
@@ -52,20 +56,43 @@ export class DesktopBridge extends EventEmitter {
       try { this.catalogRows = await this.historyReader.list(); this.catalogAt = Date.now(); } catch { /* Keep known chats available. */ }
     }
     const rows = new Map(this.catalogRows.map(row => [row.id, row]));
-    for (const entry of this.entries.values()) rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });
+    for (const entry of this.entries.values()) {if(entry.autoName&&rows.get(entry.id)?.name)entry.name=rows.get(entry.id).name;rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });}
     return [...rows.values()];
   }
   async usage() {
     return this.historyReader?.usage ? this.historyReader.usage() : {available:false,primary:null,secondary:null,updatedAt:null,stale:true};
   }
+  async createThread({baseThreadId,name}){
+    if(!this.allowSelectedChats||!this.chatCreator)throw Error('请先在电脑允许手机选择和新建会话');
+    const base=(await this.catalog()).find(row=>row.id===baseThreadId);if(!base)throw Error('请先选择一个已有会话作为新会话的项目');
+    const cwd=this.entries.get(baseThreadId)?.store.state?.cwd||this.historyReader?.threadDirectories?.get(baseThreadId);if(!cwd)throw Error('当前会话工作目录未就绪，请选择其他项目');
+    const title=typeof name==='string'?name.trim().slice(0,80):'';
+    const created=await this.chatCreator.create({cwd,name:title,model:this.entries.get(baseThreadId)?.store.state?.latestModel});
+    const row={id:created.id,name:created.name,groupId:base.groupId==='pinned'?'chats':base.groupId,groupName:base.groupId==='pinned'?'其他会话':base.groupName,groupOrder:base.groupOrder,updatedAt:Date.now()/1000};
+    this.catalogRows.push(row);this.entries.set(created.id,{...row,autoName:!title,writable:true,history:[],store:new ThreadState(),ready:false,consumed:new Set()});this.client?.enableThreadControl(created.id);this.catalogAt=0;this.emit('changed');
+    try{await this.chatCreator.show(created.id);}catch{/* Keep the created chat; never create a duplicate because opening the window failed. */}
+    await this.openThread(created.id);return {id:created.id,name:created.name};
+  }
+  async history(threadId) {
+    const row=(await this.catalog()).find(row=>row.id===threadId);
+    if(!row || !this.historyReader)throw Error('聊天不在可同步列表中');
+    // Background history reads never acquire desktop writer ownership or load media.
+    return {...row,ready:false,writable:false,historyReady:true,historyUpdatedAt:row.updatedAt??0,
+      turns:await this.backgroundHistoryReader.turns(threadId,{limit:10}),questions:[],approvals:[],activeTurnId:''};
+  }
   async openThread(id) {
     if (this.entries.has(id)) {
       const entry = this.entries.get(id); entry.historyReady = false;
+      this.entries.delete(id);this.entries.set(id,entry);
       void this.hydrate(entry, this.generation); return;
     }
     const row = (await this.catalog()).find(row => row.id === id);
-    if (!row) throw Error('聊天不在本机列表中');
-    if (this.entries.size >= 24) throw Error('已打开 24 个聊天，请重启连接服务后再选择');
+    if (!row) {const error=Error('聊天已不存在于本机列表中');error.code='THREAD_NOT_FOUND';throw error;}
+    if (this.entries.size >= 24) {
+      const idle=[...this.entries.values()].find(entry=>!activeTurn(entry.store.state)&&!entry.loadingGeneration);
+      if(!idle)throw Error('多个聊天正在加载，请稍后再切换');
+      this.client?.unfollowThread?.(idle.id);this.entries.delete(idle.id);clearTimeout(idle.repairTimer);
+    }
     const entry = { ...row, writable: this.allowSelectedChats, history: [], store: new ThreadState(), ready: false, consumed: new Set() };
     this.entries.set(id, entry);
     if (entry.writable) this.client?.enableThreadControl(id);
@@ -92,6 +119,7 @@ export class DesktopBridge extends EventEmitter {
         entry.owner = owner;
         if(entry.resubscribe){client.unfollowThread?.(entry.id);entry.resubscribe=false;}
         await client.followThread(entry.id, owner);
+        if(entry.nativeQueue===undefined&&this.historyReader?.queuedMessages){const epoch=entry.queueEpoch||0;const queue=await this.historyReader.queuedMessages(entry.id);if(generation===this.generation&&(entry.queueEpoch||0)===epoch)entry.nativeQueue=queue;}
         const [history]=await Promise.allSettled([
           client.loadHistory(entry.id, owner),
           client.readModelSettings ? client.readModelSettings(entry.id,owner).then(value=>{if(generation===this.generation)entry.modelSettings=value;}) : Promise.resolve(),
@@ -118,7 +146,7 @@ export class DesktopBridge extends EventEmitter {
   snapshot() {
     return [...this.entries.values()].map(entry => {
       const state = entry.store.state;
-      const liveTurn=entry.ready?getTurns(state).findLast(turn=>turn.status==='inProgress'):null;
+      const liveTurn=entry.ready?activeTurn(state):null;
       const summary = summarizeThread(state);
       const turns = new Map((entry.history || []).map(turn => [turn.id, turn]));
       for (const turn of summary.turns) {
@@ -133,6 +161,8 @@ export class DesktopBridge extends EventEmitter {
           toolResults: turn.toolResults?.length ? turn.toolResults : previous?.toolResults || [] });
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
+        queueSupported:!!this.historyReader?.queuedMessages,
+        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
         model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
         serviceTier:state?.latestThreadSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
@@ -141,7 +171,7 @@ export class DesktopBridge extends EventEmitter {
         // still contain an inProgress status captured before a disconnection.
         // Use an empty string on the wire: Android JSONObject.optString coerces
         // JSON null into the nonempty string "null" (unlike JSON-java on the JVM).
-        activeTurnId: entry.ready ? getTurns(state).findLast(turn => turn.status === 'inProgress')?.turnId ?? '' : '',
+        activeTurnId: liveTurn?.turnId ?? '',
         revision: entry.store.revision, runtimeStatus: summary.runtimeStatus || 'unavailable',
         turns: [...turns.values()].slice(-50),
         questions: entry.ready ? pendingQuestions(state).map(q => ({ ...q, submitting: entry.consumed.has(JSON.stringify(['question', q.turnId, q.id])) })) : [],
@@ -162,12 +192,17 @@ export class DesktopBridge extends EventEmitter {
         }) };
     });
   }
-  async command(threadId, command) {
+  async command(threadId, command, serialized = false) {
+    if(!serialized&&['queue','queue-remove'].includes(command.op)){
+      const entry=this.entries.get(threadId);if(!entry)throw Error('聊天尚未就绪，请等待重新连接');
+      const operation=(entry.queueOperation||Promise.resolve()).catch(()=>{}).then(()=>this.command(threadId,command,true));entry.queueOperation=operation;
+      try{return await operation;}finally{if(entry.queueOperation===operation)delete entry.queueOperation;}
+    }
     const entry = this.entries.get(threadId);
     if (!entry || !entry.ready || !this.client.initialized) throw new Error('聊天尚未就绪，请等待重新连接');
     if (!entry.writable) throw new Error('此聊天仅允许读取，请在电脑授权后操作');
     const state = entry.store.state;
-    const active = getTurns(state).findLast(turn => turn.status === 'inProgress');
+    const active = activeTurn(state);
     if (command.op === 'model') {
       const {models}=await this.modelOptions(threadId);
       const model=models.find(row=>row.model===command.model);
@@ -182,6 +217,17 @@ export class DesktopBridge extends EventEmitter {
         if((entry.store.state?.latestThreadSettings?.serviceTier??'default')!==command.serviceTier)throw Error('电脑速度设置尚未确认，请刷新后核对');
       }
       this.emit('changed');
+    } else if(command.op==='queue'){
+      if(!this.historyReader?.queuedMessages)throw Error('桌面排队状态暂不可读，请更新电脑插件');
+      const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
+      if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
+      const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
+        context:{prompt:command.text,addedFiles:[],fileAttachments:[],imageAttachments:[],commentAttachments:[],ideContext:null,messageThreadId:randomUUID()},
+        submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
+      await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
+    } else if(command.op==='queue-remove'){
+      if(!(entry.nativeQueue||[]).some(row=>row.id===command.messageId))throw Error('排队消息已变化，请刷新');
+      await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
       await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
@@ -233,5 +279,5 @@ export class DesktopBridge extends EventEmitter {
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
     return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
   }
-  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close(); }
+  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
 }

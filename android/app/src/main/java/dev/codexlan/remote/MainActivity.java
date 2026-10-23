@@ -40,6 +40,40 @@ public final class MainActivity extends Activity {
     private TextView usagePrimary,usageSecondary,usageUpdated;
     private EditText composer;
     private Button send;
+    private SpeechInput speechInput;
+    private VoiceModels voiceModels;
+    private boolean voiceUpdating;
+    private String voiceStatus="";
+    private String voiceChat="",voiceComputer="";
+    private void beginVoiceInput(){
+        if(composer==null||!composer.getText().toString().trim().isEmpty()||isSending())return;
+        voiceChat=selectedThreadId;voiceComputer=api==null?"":api.fingerprint;
+        if(!VoiceModels.ready(this)){openVoiceModels(true);return;}
+        if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+            if(getPreferences(MODE_PRIVATE).getBoolean("microphoneAsked",false)&&!shouldShowRequestPermissionRationale(android.Manifest.permission.RECORD_AUDIO)){microphoneSettings();return;}
+            getPreferences(MODE_PRIVATE).edit().putBoolean("microphoneAsked",true).apply();requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},207);return;
+        }
+        openVoiceInput();
+    }
+    private void openVoiceModels(boolean useAfter){
+        cancelVoice();if(voiceModels==null)voiceModels=new VoiceModels(this);voiceModels.open(useAfter?()->{if(visible&&!isFinishing())beginVoiceInput();}:null);
+    }
+    private void microphoneSettings(){
+        android.app.Dialog dialog=new android.app.Dialog(this);LinearLayout page=panel(dialog,"麦克风权限");TextView detail=text("语音输入需要麦克风权限。请在系统应用设置中将麦克风设为“仅在使用应用时允许”，返回后再次长按开始。\n\n如果已允许仍无法录音，请检查系统麦克风访问开关，以及是否有其他应用正在占用麦克风。",15,foreground);detail.setPadding(dp(8),dp(12),dp(8),dp(18));page.addView(detail);
+        Button settings=button("打开系统设置");page.addView(settings);settings.setOnClickListener(v->{dialog.dismiss();try{startActivity(new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName())));}catch(Exception error){toast("请在系统设置 → 应用 → Codex LAN → 权限中开启麦克风");}});Button back=button("暂不开启");back.setBackground(rounded(surface(48,48,48),16));back.setTextColor(foreground);page.addView(back);back.setOnClickListener(v->dialog.dismiss());dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(Math.min(dp(400),getResources().getDisplayMetrics().widthPixels-dp(32)),-2);
+    }
+    private void cancelVoice(){if(speechInput!=null)speechInput.cancel();voiceStatus="";}
+    private void openVoiceInput(){
+        if(api==null||!voiceComputer.equals(api.fingerprint)||!voiceChat.equals(selectedThreadId)||composer==null||!composer.getText().toString().trim().isEmpty())return;
+        final String chat=voiceChat,computer=voiceComputer;cancelVoice();
+        if(speechInput==null)speechInput=new SpeechInput(this);
+        speechInput.start(new SpeechInput.Listener(){
+            public void text(String value){if(isDestroyed()||api==null||!computer.equals(api.fingerprint))return;drafts.put(chat,value);if(chat.equals(selectedThreadId)&&composer!=null){voiceUpdating=true;try{composer.setText(value);composer.setSelection(composer.length());}finally{voiceUpdating=false;}setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}}
+            public void status(String value){voiceStatus=value;if(!isDestroyed())setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}
+            public void ended(){voiceStatus="";if(!isDestroyed())setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}
+            public void error(String value){if(!isDestroyed())toast(value);}
+        });
+    }
     private TextView modelChoice,latestJump;
     private ConversationRail jumpRail;
     private PopupWindow railPreview,modelPopup;
@@ -54,6 +88,7 @@ public final class MainActivity extends Activity {
     private final java.util.Map<String,String> secretQuestionDrafts=new java.util.HashMap<>();
     private final java.util.Set<String> expandedTools = new java.util.HashSet<>();
     private final java.util.Map<String, String> drafts = new java.util.HashMap<>();
+    private final SentMessages sentMessages=new SentMessages();
     private JSONObject currentThread;
     private TranscriptListView scroll;
     private InlineQuestionsView questionArea;
@@ -74,7 +109,7 @@ public final class MainActivity extends Activity {
         if(thread==null||isDestroyed()||!renderGate.begin())return;
         final ChatAdapter page=chatAdapter;final String chat=thread.optString("id");
         renderWorker.execute(()->{try{
-            java.util.List<ChatRows.Row> rows=ChatRows.build(thread);
+            java.util.List<ChatRows.Row> rows=ChatRows.build(sentMessages.project(thread));
             runOnUiThread(()->{
                 boolean samePage=!isDestroyed()&&page==chatAdapter&&currentThread!=null&&chat.equals(currentThread.optString("id"));
                 // Apply a completed same-chat result even if a newer snapshot is
@@ -119,13 +154,23 @@ public final class MainActivity extends Activity {
     private JSONObject currentState;
     private String selectedThreadId = "";
     private Button selectChat;
+    private TextView queueChip;
+    private TextView sendModeChoice;
+    private String sendMode(){return getPreferences(MODE_PRIVATE).getString("sendMode:"+(api==null?"":api.fingerprint),"queue");}
+    private String composerAction(){return MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString(),sendMode());}
+    private void chooseSendMode(){
+        LinearLayout choices=vertical();choices.setPadding(dp(8),dp(8),dp(8),dp(8));choices.setBackground(rounded(surface(43,43,43),18));final PopupWindow[] menu={null};
+        String[] modes={"queue","steer"},titles={"排队发送","立即插话"},details={"当前任务完成后，按顺序执行","将消息立即补充到正在执行的任务"};
+        for(int i=0;i<modes.length;i++){String mode=modes[i];LinearLayout row=vertical();row.setPadding(dp(12),dp(10),dp(12),dp(10));row.setBackground(rounded(mode.equals(sendMode())?surface(58,58,58):Color.TRANSPARENT,12));TextView title=text(titles[i]+(mode.equals(sendMode())?"  ✓":""),15,foreground);title.setTextIsSelectable(false);row.addView(title);TextView detail=text(details[i],12,muted);detail.setTextIsSelectable(false);row.addView(detail);choices.addView(row);row.setOnClickListener(v->{getPreferences(MODE_PRIVATE).edit().putString("sendMode:"+(api==null?"":api.fingerprint),mode).apply();menu[0].dismiss();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));});}
+        menu[0]=AnchoredMenu.show(this,sendModeChoice,choices,dp(290),false);
+    }
     private final android.content.BroadcastReceiver updates = new android.content.BroadcastReceiver() {
         @Override public void onReceive(android.content.Context context, android.content.Intent intent) {
             if(PairingCoordinator.UPDATE.equals(intent.getAction())){refreshPairingUi();return;}
             if(SessionService.USAGE_UPDATE.equals(intent.getAction())){updateUsageIndicator();return;}
             if(connectionGuideVisible)return;
             if (api == null || SessionService.latest == null || !api.fingerprint.equals(SessionService.latest.optString("computer"))) return;
-            try { render(SessionService.latest); } catch (Exception error) { status.setText("同步显示失败：" + error.getMessage()); }
+            try {JSONObject saved=storage.load();if(saved!=null&&!isSending()&&api.fingerprint.equals(saved.optString("fingerprint"))&&!api.address.equals(saved.optString("address"))){api.cancel();api=new RemoteApi(saved.getString("address"),saved.getString("fingerprint"),saved.getString("token"));generation++;}render(SessionService.latest); } catch (Exception error) { status.setText("同步显示失败：" + error.getMessage()); }
         }
     };
 
@@ -156,6 +201,7 @@ public final class MainActivity extends Activity {
     }
     private void base(String title, String subtitle) {
         root = vertical(); root.setBackgroundColor(background); root.setPadding(dp(20), dp(14), dp(20), dp(10));
+        root.setFocusableInTouchMode(true);root.requestFocus();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
@@ -294,7 +340,7 @@ public final class MainActivity extends Activity {
                             if(!direct){long until=android.os.SystemClock.uptimeMillis()+20000;while(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口"))&&android.os.SystemClock.uptimeMillis()<until)Thread.sleep(200);if(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口")))throw new Exception("EasyTier 未就绪，请在设置中检查组网");}
                             JSONObject verified=candidate.call("GET","/v1/state",null,null);
                             runOnUiThread(()->{if(isDestroyed()||api!=original||generation!=epoch||!menu[0].isShowing())return;try{
-                                JSONObject connection=storage.load();if(connection==null)throw new Exception("配对信息已清除");addresses.put(previous,original.address).put(mode,candidate.address);connection.put("address",candidate.address).put("addresses",addresses);storage.save(connection);
+                                JSONObject connection=storage.load();if(connection==null)throw new Exception("配对信息已清除");addresses.put(previous,original.address).put(mode,candidate.address);connection.put("address",candidate.address).put("addresses",addresses);storage.save(ConnectionHistory.remember(connection,candidate.address,mode));
                                 if(direct)EasyTierVpnService.disconnect(this);original.cancel();api=candidate;generation++;getPreferences(MODE_PRIVATE).edit().putString("networkMode",mode).apply();verified.put("online",true);render(verified);
                                 android.content.Intent intent=new android.content.Intent(this,SessionService.class).setAction("switch-address").putExtra("networkMode",mode);if(!selectedThreadId.isEmpty())intent.putExtra("threadId",selectedThreadId);startForegroundService(intent);menu[0].dismiss();
                             }catch(Exception e){busy[0]=false;feedback.setText("切换未确认，请重试");}});
@@ -314,6 +360,7 @@ public final class MainActivity extends Activity {
             JSONObject advertised=currentState==null?null:currentState.optJSONObject("connectionAddresses");final JSONObject hints=advertised==null?new JSONObject():advertised;
             final PopupWindow[] connectionMenu={null};final LinearLayout[] connectionCard={null};LinearLayout form=vertical();form.setPadding(dp(20),0,dp(20),dp(12));RadioGroup modes=new RadioGroup(this);RadioButton lan=new RadioButton(this),et=new RadioButton(this);lan.setId(View.generateViewId());et.setId(View.generateViewId());lan.setText("局域网直连 · 同一 Wi-Fi");et.setText("EasyTier · 异地组网");lan.setTextColor(foreground);et.setTextColor(foreground);modes.addView(lan);modes.addView(et);form.addView(modes);
             TextView hint=text("",13,muted);form.addView(hint);EditText address=field("电脑 IP:9443");address.setBackground(rounded(surface(46,46,46),14));address.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);form.addView(address);
+            java.util.List<String> remembered=ConnectionHistory.addresses(saved);if(!remembered.isEmpty()){TextView history=text("历史局域网地址  ⌄",13,accent);history.setPadding(dp(10),dp(12),0,dp(8));history.setTextIsSelectable(false);form.addView(history);history.setOnClickListener(view->{LinearLayout choices=vertical();choices.setPadding(dp(8),dp(8),dp(8),dp(8));choices.setBackground(rounded(surface(40,40,40),18));final PopupWindow[] popup={null};for(String rememberedAddress:remembered){TextView row=text(rememberedAddress.replace("https://",""),14,foreground);row.setPadding(dp(12),dp(12),dp(12),dp(12));choices.addView(row);row.setOnClickListener(v->{modes.check(lan.getId());address.setText(rememberedAddress);popup[0].dismiss();});}popup[0]=AnchoredMenu.below(this,history,choices,dp(280));});}
             Button etSettings=button("配置 / 连接 EasyTier");form.addView(etSettings);etSettings.setOnClickListener(v->easyTierDialog());
             modes.setOnCheckedChangeListener((group,id)->{boolean direct=id==lan.getId();String key=direct?"lan":"easytier";address.setText(profiles.optString(key,hints.optString(direct?"lan":"primary",direct?"":original.address)));etSettings.setVisibility(direct?View.GONE:View.VISIBLE);hint.setText(direct?"填写电脑的局域网 IPv4。电脑插件需绑定此地址，或开启额外局域网直连。":"先连接 EasyTier，再填写电脑虚拟 IP。切换地址仍会校验同一电脑证书及授权。");if(connectionMenu[0]!=null)form.post(()->AnchoredMenu.resize(this,anchor,connectionCard[0],connectionMenu[0]));});
             modes.check("easytier".equals(getPreferences(MODE_PRIVATE).getString("networkMode",""))?et.getId():lan.getId());
@@ -325,7 +372,7 @@ public final class MainActivity extends Activity {
                 verify.setEnabled(false);feedback.setText("正在验证电脑身份和连接…");
                 worker.execute(()->{try{JSONObject verified=candidate.call("GET","/v1/state",null,null);runOnUiThread(()->{
                     if(isDestroyed()||api!=original||epoch!=generation||!dialog.isShowing())return;
-                    try{JSONObject connection=storage.load();if(connection==null)throw new Exception("配对信息已清除");String previous=getPreferences(MODE_PRIVATE).getString("networkMode","");if(!previous.isEmpty())profiles.put(previous,original.address);profiles.put(mode,candidate.address);connection.put("address",candidate.address).put("addresses",profiles);storage.save(connection);
+                    try{JSONObject connection=storage.load();if(connection==null)throw new Exception("配对信息已清除");String previous=getPreferences(MODE_PRIVATE).getString("networkMode","");if(!previous.isEmpty())profiles.put(previous,original.address);profiles.put(mode,candidate.address);connection.put("address",candidate.address).put("addresses",profiles);storage.save(ConnectionHistory.remember(connection,candidate.address,mode));
                         if("lan".equals(mode))EasyTierVpnService.disconnect(this);
                         original.cancel();api=candidate;generation++;getPreferences(MODE_PRIVATE).edit().putString("networkMode",mode).apply();verified.put("online",true);render(verified);
                         android.content.Intent intent=new android.content.Intent(this,SessionService.class).setAction("switch-address").putExtra("networkMode",mode);if(!selectedThreadId.isEmpty())intent.putExtra("threadId",selectedThreadId);startForegroundService(intent);dialog.dismiss();toast("连接方式已切换");
@@ -358,19 +405,24 @@ public final class MainActivity extends Activity {
         scroll.setOnScrollListener(new AbsListView.OnScrollListener(){public void onScroll(AbsListView v,int first,int count,int total){highlightJumpRail(first);updateLatestJump();}public void onScrollStateChanged(AbsListView v,int state){listScrolling=state!=SCROLL_STATE_IDLE;if(!listScrolling&&deferredRows!=null){renderHandler.removeCallbacks(flushRows);java.util.List<ChatRows.Row> rows=deferredRows;deferredRows=null;applyRows(rows);}}});
         questionArea=new InlineQuestionsView(this,()->root.getHeight()-root.getPaddingTop()-root.getPaddingBottom());questionContent=vertical();questionArea.addView(questionContent);questionArea.setVisibility(View.GONE);questionSignature="";questionChat="";root.addView(questionArea,new LinearLayout.LayoutParams(-1,-2));
         LinearLayout dock = vertical(); dock.setPadding(dp(10),dp(4),dp(10),dp(8)); dock.setBackground(rounded(surface(38,38,38),24));
+        queueChip=text("",12,accent);queueChip.setPadding(dp(12),dp(8),dp(12),dp(4));queueChip.setTextIsSelectable(false);queueChip.setVisibility(View.GONE);queueChip.setOnClickListener(v->queueDialog());dock.addView(queueChip);
         composer = field("发送消息"); composer.setBackgroundColor(Color.TRANSPARENT); composer.setSingleLine(false); composer.setMaxLines(6); composer.setMinLines(1); composer.setPadding(dp(12),dp(12),dp(8),dp(12)); composer.setText(drafts.containsKey(selectedThreadId) ? drafts.get(selectedThreadId) : "");
         dock.addView(composer,new LinearLayout.LayoutParams(-1,-2));
         LinearLayout controls=new LinearLayout(this);controls.setGravity(android.view.Gravity.CENTER_VERTICAL);
         modelChoice=powerText("选择模型  ⌄",12,muted);modelChoice.setTextIsSelectable(false);modelChoice.setSingleLine(true);modelChoice.setEllipsize(android.text.TextUtils.TruncateAt.END);modelChoice.setPadding(dp(10),dp(10),dp(4),dp(10));modelChoice.setContentDescription("选择模型与思考强度");modelChoice.setOnClickListener(v->modelDialog());controls.addView(modelChoice,new LinearLayout.LayoutParams(0,dp(48),1));
-        send = icon("send","发送消息",true); controls.addView(send,new LinearLayout.LayoutParams(dp(48),dp(48))); dock.addView(controls);root.addView(dock);
+        sendModeChoice=text("排队  ⌄",12,foreground);sendModeChoice.setTextIsSelectable(false);sendModeChoice.setGravity(android.view.Gravity.CENTER);sendModeChoice.setPadding(dp(8),0,dp(8),0);sendModeChoice.setOnClickListener(v->chooseSendMode());controls.addView(sendModeChoice,new LinearLayout.LayoutParams(dp(76),dp(48)));
+        send = icon("send","发送消息",true); controls.addView(send,new LinearLayout.LayoutParams(dp(44),dp(44))); dock.addView(controls);root.addView(dock);
+        send.setOnLongClickListener(v->{if(speechInput!=null&&speechInput.running())speechInput.stop();else if(composer.getText().toString().trim().isEmpty())beginVoiceInput();else toast("点击发送消息");return true;});
         sendStatus = text("正在同步聊天状态…", 11, muted); sendStatus.setGravity(android.view.Gravity.CENTER); sendStatus.setTextIsSelectable(false); root.addView(sendStatus);
         sendStatus.setOnClickListener(view -> { toast("正在重新同步所选聊天"); beginPolling(true); });
         send.setOnClickListener(view -> {
-            String action=MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString());
+            if(speechInput!=null&&speechInput.running()){if(composer.getText().toString().trim().isEmpty()){speechInput.stop();return;}cancelVoice();}
+            String action=composerAction();
             if("interrupt".equals(action)){try{command(new JSONObject().put("op","interrupt").put("turnId",MobileState.activeTurnId(currentThread)),false);}catch(Exception e){toast(error(e));}}
             else if(!"none".equals(action))submit(action);
+            else if(composer.getText().toString().trim().isEmpty()&&!isSending())toast("长按按钮，语音输入");
         });
-        composer.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}public void afterTextChanged(android.text.Editable e){}});
+        composer.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){if(!voiceUpdating&&speechInput!=null&&speechInput.running())cancelVoice();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}public void afterTextChanged(android.text.Editable e){}});
         setButtons(false);
         RemoteApi client = api;
         worker.execute(() -> {
@@ -394,14 +446,16 @@ public final class MainActivity extends Activity {
         try { if (!payload.has("threadId")) payload.put("threadId", currentThread.getString("id")); } catch (Exception e) { return; }
         RemoteApi client = api; int epoch = generation; String textBefore = composer.getText().toString();
         String id=UUID.randomUUID().toString(),chat=payload.optString("threadId");
+        final java.util.Set<String> before;try{before=new java.util.HashSet<>(SentMessages.users(currentThread).keySet());}catch(Exception e){return;}
         if(!commands.begin(chat,id))return;setButtons(false);RemoteApi channel=client.readChannel();commandChannels.put(id,channel);
         worker.execute(() -> {
             try {
                 channel.call("POST", "/v1/command", payload, id);
                 runOnUiThread(() -> { if (epoch == generation && client == api) {
+                    if(clearComposer&&("start".equals(payload.optString("op"))||"steer".equals(payload.optString("op")))){sentMessages.accepted(chat,id,payload.optString("text"),before);if(chat.equals(selectedThreadId)){renderRevision++;scheduleRows();}}
                     if (clearComposer && payload.optString("threadId").equals(selectedThreadId) && composer.getText().toString().equals(textBefore)) { composer.setText(""); drafts.remove(selectedThreadId); }
                     if("model".equals(payload.optString("op"))){JSONObject cached=modelCache.get(modelCacheKey(client,payload.optString("threadId")));if(cached!=null)try{cached.put("current",new JSONObject().put("model",payload.optString("model")).put("effort",payload.optString("effort")).put("serviceTier",payload.optString("serviceTier",cached.optJSONObject("current")==null?"default":cached.optJSONObject("current").optString("serviceTier","default"))));}catch(Exception ignored){}}
-                    if(confirmed!=null)confirmed.run();if(confirmed==null||!"model".equals(payload.optString("op")))toast("电脑已接收");
+                    if(confirmed!=null)confirmed.run();
                 } });
             } catch (Exception e) { runOnUiThread(() -> { if (epoch == generation && client == api){if(failed!=null)failed.run();toast("提交未确认，请检查聊天状态后再操作：" + error(e));} }); }
             finally { channel.cancel();runOnUiThread(() -> {commandChannels.remove(id);commands.finish(chat,id);if(epoch==generation&&client==api)setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}); }
@@ -412,21 +466,31 @@ public final class MainActivity extends Activity {
         boolean active = !MobileState.activeTurnId(currentThread).isEmpty();
         String reason = MobileState.unavailableReason(currentState, currentThread, isSending());
         ready = ready && reason.isEmpty();
-        String action=MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString());
-        boolean stop="interrupt".equals(action);send.setEnabled(ready && !"none".equals(action));send.setAlpha(send.isEnabled()?1f:.35f);
-        UiIcon image=new UiIcon(stop?"stop":"send",background);image.setBounds(0,0,dp(22),dp(22));send.setCompoundDrawables(image,null,null,null);
-        send.setContentDescription(isSending()?"正在提交":stop?"停止当前回复":"steer".equals(action)?"追加指令":"发送消息");
-        if (sendStatus != null) sendStatus.setText(reason.isEmpty()
-            ? active ? (stop?"正在回复 · 点击方形按钮停止":"发送会追加到当前任务") : "消息发送至电脑上的 Codex"
+        String action=composerAction();
+        if(sendModeChoice!=null){sendModeChoice.setText("steer".equals(sendMode())?"插话  ⌄":"排队  ⌄");sendModeChoice.setContentDescription("发送模式："+("steer".equals(sendMode())?"立即插话":"排队发送")+"，点击切换");}
+        boolean dictating=speechInput!=null&&speechInput.running(),empty=composer.getText().toString().trim().isEmpty(),stop="interrupt".equals(action)&&!dictating,voice=empty&&!stop&&!isSending();send.setEnabled(ready&&!"none".equals(action)||empty&&!isSending());send.setAlpha(send.isEnabled()?1f:.35f);
+        send.setBackground(rounded(stop?foreground:(palette.dark?0xff3478f6:0xff2867d7),22));
+        UiIcon image=new UiIcon(stop?"stop":voice?"voice":"send",stop?background:Color.WHITE);image.setBounds(0,0,dp(20),dp(20));send.setCompoundDrawables(image,null,null,null);
+        send.setContentDescription(dictating&&empty?"正在语音输入，点击结束":isSending()?"正在提交":stop?"停止当前回复，长按语音输入":voice?"语音输入，长按开始":"queue".equals(action)?"排队发送":"steer".equals(action)?"插话发送":"发送消息");
+        JSONArray queued=currentThread==null?null:currentThread.optJSONArray("queuedMessages");if(queueChip!=null){int count=queued==null?0:queued.length();queueChip.setVisibility(count==0?View.GONE:View.VISIBLE);queueChip.setText("已排队 "+count+" 条 · 点击查看");}
+        if (sendStatus != null) sendStatus.setText(dictating&&!voiceStatus.isEmpty()?voiceStatus:reason.isEmpty()
+            ? active ? (stop?"正在回复 · 点击方形按钮停止":"queue".equals(action)?"排队模式 · 当前任务结束后按顺序发送":"插话模式 · 立即补充到当前任务") : "queue".equals(action)?"消息将加入现有队列，按顺序发送":"消息发送至电脑上的 Codex"
             : reason + " · 点此重新同步");
+    }
+    private void queueDialog(){
+        if(currentThread==null)return;JSONArray messages=currentThread.optJSONArray("queuedMessages");if(messages==null||messages.length()==0){toast("暂无排队消息");return;}
+        android.app.Dialog dialog=new android.app.Dialog(this);LinearLayout page=panel(dialog,"排队消息");ScrollView scroll=new ScrollView(this);LinearLayout items=vertical();scroll.addView(items);page.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        for(int i=0;i<messages.length();i++){JSONObject message=messages.optJSONObject(i);if(message==null)continue;LinearLayout card=vertical();card.setPadding(dp(14),dp(12),dp(14),dp(12));card.setBackground(rounded(surface(38,38,38),18));TextView label=text((i+1)+". "+message.optString("text"),14,foreground);label.setMaxLines(5);card.addView(label);Button remove=button("移出队列");String state=message.optString("status");remove.setEnabled(!state.equals("sending")&&!state.equals("outcome-unknown"));remove.setOnClickListener(v->{try{command(new JSONObject().put("op","queue-remove").put("messageId",message.getString("id")),false,dialog::dismiss);}catch(Exception e){toast(error(e));}});card.addView(remove);LinearLayout.LayoutParams space=new LinearLayout.LayoutParams(-1,-2);space.bottomMargin=dp(10);items.addView(card,space);}
+        dialog.show();dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(Math.min(dp(420),getResources().getDisplayMetrics().widthPixels-dp(24)),(int)(getResources().getDisplayMetrics().heightPixels*.72f));
     }
     private void render(JSONObject state) throws Exception {
         if(connectionGuideVisible){currentState=state;return;}
         currentState = state;
+        if(!selectedThreadId.isEmpty()&&selectedThreadId.equals(state.optString("recoveredSelectionFrom"))){drafts.put(selectedThreadId,composer==null?"":composer.getText().toString());selectedThreadId=state.optString("selectedThreadId");if(composer!=null)composer.setText(drafts.containsKey(selectedThreadId)?drafts.get(selectedThreadId):"");}
         if(appUpdates!=null&&api!=null&&state.optBoolean("online"))appUpdates.desktop(state.optString("desktopVersion"),api.fingerprint);
         JSONArray threads = state.optJSONArray("threads"); if (threads == null) threads = new JSONArray();
         if (selectedThreadId.isEmpty()) selectedThreadId = state.optString("selectedThreadId");
-        if (selectedThreadId.isEmpty() && threads.length() > 0) selectedThreadId = threads.getJSONObject(0).getString("id");
+        if (selectedThreadId.isEmpty() && threads.length() > 0 && state.optString("recoveredSelectionFrom").isEmpty()) selectedThreadId = threads.getJSONObject(0).getString("id");
         currentThread = null;
         for (int i = 0; i < threads.length(); i++) if (threads.getJSONObject(i).getString("id").equals(selectedThreadId)) currentThread = threads.getJSONObject(i);
         if(currentThread!=null){
@@ -704,7 +768,7 @@ public final class MainActivity extends Activity {
             wrapper.removeAllViews();wrapper.setTag(bound);wrapper.setPadding(0,0,0,dp(6));
             if("tools".equals(row.type))wrapper.addView(toolGroup(row));
             else if("user".equals(row.type)||"message".equals(row.type)){
-                wrapper.addView(bubble("user".equals(row.type)?(row.data.optString("text").isEmpty()?"":ChatRows.userText(row.data.optString("text"))):ChatRows.displayText(row.data.optString("text")),"user".equals(row.type),row.data.optJSONArray("files")));
+                wrapper.addView(bubble("user".equals(row.type)?(row.data.optString("text").isEmpty()?"":ChatRows.userText(row.data.optString("text"))):ChatRows.displayText(row.data.optString("text")),"user".equals(row.type),row.data.optJSONArray("files"),row.data.optString("delivery")));
             }
             else if("activity".equals(row.type)){
                 LinearLayout activity=vertical();TextView label=text(row.data.optString("label","正在思考…"),13,muted);activity.addView(label);String summary=row.data.optString("summary");if(!summary.isEmpty())activity.addView(text(summary,13,muted));wrapper.addView(activity);
@@ -718,11 +782,12 @@ public final class MainActivity extends Activity {
         }
     }
     private void toolText(LinearLayout parent,String label,String value){parent.addView(text(label,11,muted));TextView body=text(value,12,foreground);body.setTypeface(Typeface.MONOSPACE);body.setHorizontallyScrolling(true);HorizontalScrollView horizontal=new HorizontalScrollView(this);horizontal.addView(body);parent.addView(horizontal);}
-    private View bubble(String content, boolean user,JSONArray files) {
+    private View bubble(String content, boolean user,JSONArray files,String delivery) {
         LinearLayout card = vertical(); card.setPadding(dp(14),dp(8),dp(14),dp(10));
         card.setBackground(rounded(user?surface(43,43,43):surface(27,27,27),20));
         if(!content.isEmpty()){if(user) card.addView(text(content,16,foreground)); else MessageBody.add(this, card, content, foreground, muted);}
         chatFiles.add(card,files,currentThread.optString("id"),api);
+        if(!delivery.isEmpty()){TextView state=text(delivery,11,muted);state.setGravity(android.view.Gravity.END);card.addView(state);}
         LinearLayout wrapper=vertical();LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(user ? -2 : -1, -2); params.gravity = user ? android.view.Gravity.END : android.view.Gravity.START; params.setMargins(user ? dp(32) : 0,dp(10),user?0:dp(12),dp(10));wrapper.addView(card,params);return wrapper;
     }
     private void review(JSONObject approval, String threadId) {
@@ -849,6 +914,7 @@ public final class MainActivity extends Activity {
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if(request==207){if(results.length>0&&results[0]==android.content.pm.PackageManager.PERMISSION_GRANTED)openVoiceInput();else if(!shouldShowRequestPermissionRationale(android.Manifest.permission.RECORD_AUDIO))microphoneSettings();else toast("未开启麦克风权限，可继续键盘输入，长按可重试");return;}
         if (request == 201) prepareEasyTier();
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
@@ -879,34 +945,18 @@ public final class MainActivity extends Activity {
     private void chooseChat() {
         if (currentState == null) { toast("尚无聊天列表，请先连接电脑"); return; }
         try {
-            java.util.LinkedHashMap<String, String> rows = new java.util.LinkedHashMap<>();
-            for (String key : new String[] { "catalog", "threads" }) {
-                JSONArray values = currentState.optJSONArray(key); if (values == null) continue;
-                for (int i = 0; i < values.length(); i++) { JSONObject row = values.getJSONObject(i); rows.put(row.getString("id"), row.optString("name", "桌面聊天")); }
-            }
+            java.util.List<JSONObject> rows=ChatCatalog.rows(currentState);
             android.app.Dialog drawer = new android.app.Dialog(this); LinearLayout panel = panel(drawer,"会话");
             LinearLayout searchBar=new LinearLayout(this);searchBar.setGravity(android.view.Gravity.CENTER_VERTICAL);searchBar.setPadding(dp(14),0,dp(14),0);searchBar.setBackground(rounded(surface(38,38,38),24));
             ImageView searchIcon=new ImageView(this);searchIcon.setImageDrawable(new UiIcon("search",muted));searchBar.addView(searchIcon,new LinearLayout.LayoutParams(dp(20),dp(20)));searchIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             EditText search = field("搜索会话");search.setBackgroundColor(Color.TRANSPARENT);search.setPadding(dp(10),dp(12),0,dp(12));search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);searchBar.addView(search,new LinearLayout.LayoutParams(0,dp(48),1));
             LinearLayout.LayoutParams searchSpacing=new LinearLayout.LayoutParams(-1,dp(48));searchSpacing.topMargin=dp(8);searchSpacing.bottomMargin=dp(12);panel.addView(searchBar,searchSpacing);
-            ScrollView listScroll = new ScrollView(this); LinearLayout list = vertical(); listScroll.addView(list); panel.addView(listScroll,new LinearLayout.LayoutParams(-1,0,1));
-            Runnable filter = () -> {
-                list.removeAllViews(); String query=search.getText().toString().trim().toLowerCase(java.util.Locale.ROOT);
-                for(java.util.Map.Entry<String,String> row:rows.entrySet()) {
-                    if(!row.getValue().toLowerCase(java.util.Locale.ROOT).contains(query))continue;
-                    LinearLayout item=vertical();item.setPadding(dp(14),dp(10),dp(14),dp(10));
-                    if(row.getKey().equals(selectedThreadId))item.setBackground(rounded(surface(43,43,43),12));
-                    TextView name=text(row.getValue(),15,foreground);name.setTextIsSelectable(false);name.setMaxLines(2);item.addView(name);
-                    TextView detail=text(row.getKey().equals(selectedThreadId)?"当前会话":"点击继续",11,muted);detail.setTextIsSelectable(false);detail.setPadding(0,0,0,0);item.addView(detail);list.addView(item);
-                    item.setOnClickListener(v->{
-                        drafts.put(selectedThreadId,composer.getText().toString()); selectedThreadId=row.getKey(); composer.setText(drafts.containsKey(selectedThreadId)?drafts.get(selectedThreadId):"");
-                        try{render(currentState);}catch(Exception ignored){} beginPolling(); drawer.dismiss();
-                    });
-                }
-                if(list.getChildCount()==0)list.addView(text("没有找到匹配的会话",14,muted));
-            };
-            search.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){} public void onTextChanged(CharSequence s,int start,int before,int count){filter.run();}public void afterTextChanged(android.text.Editable e){}});
-            filter.run(); settingRow(panel,"设置","电脑连接、EasyTier 与通知",()->{drawer.dismiss();settingsPage();});
+            ChatFolders folders=new ChatFolders(this,rows,api==null?"":api.fingerprint,selectedThreadId,id->{
+                drafts.put(selectedThreadId,composer.getText().toString());selectedThreadId=id;composer.setText(drafts.containsKey(id)?drafts.get(id):"");
+                try{render(currentState);}catch(Exception ignored){}beginPolling();drawer.dismiss();
+            },id->{drawer.dismiss();createProjectChat(id);});panel.addView(folders,new LinearLayout.LayoutParams(-1,0,1));
+            search.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){folders.query(s.toString());}public void afterTextChanged(android.text.Editable e){}});
+            settingRow(panel,"设置","电脑连接、EasyTier 与通知",()->{drawer.dismiss();settingsPage();});
             drawer.show(); drawer.getWindow().setBackgroundDrawableResource(android.R.color.transparent); drawer.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels-dp(28),dp(400)),-1); drawer.getWindow().setGravity(android.view.Gravity.START);
         } catch (Exception error) { toast("聊天列表读取失败"); }
     }
@@ -914,6 +964,14 @@ public final class MainActivity extends Activity {
         LinearLayout page=vertical();page.setPadding(dp(16),dp(16),dp(16),dp(12));page.setBackgroundColor(background); page.setFitsSystemWindows(true);
         page.setOnApplyWindowInsetsListener((v,insets)->{if(android.os.Build.VERSION.SDK_INT>=30){android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());v.setPadding(dp(16)+bars.left,dp(8)+bars.top,dp(16)+bars.right,dp(12)+bars.bottom);}return insets;});
         page.addView(toolbar(title,dialog::dismiss));dialog.setContentView(page);dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);return page;
+    }
+    private boolean creatingChat;
+    private void createProjectChat(String base){
+        if(creatingChat)return;if(api==null||currentState==null||!currentState.optBoolean("online")){toast("请先连接电脑");return;}
+        creatingChat=true;RemoteApi original=api;String operation=UUID.randomUUID().toString();toast("正在创建新聊天…");
+        worker.execute(()->{RemoteApi channel=original.readChannel();try{JSONObject response=channel.call("POST","/v1/threads/new",new JSONObject().put("baseThreadId",base),operation);
+            runOnUiThread(()->{if(api!=original||isDestroyed())return;drafts.put(selectedThreadId,composer==null?"":composer.getText().toString());selectedThreadId=response.optString("id");if(composer!=null)composer.setText("");beginPolling(true);});
+        }catch(Exception e){runOnUiThread(()->{if(api==original&&!isDestroyed())toast("创建未确认，请先检查会话列表，避免重复创建："+error(e));});}finally{channel.cancel();runOnUiThread(()->creatingChat=false);}});
     }
     private TextView settingRow(LinearLayout parent,String title,String subtitle,Runnable action) {
         LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setPadding(dp(12),dp(8),dp(12),dp(8));row.setMinimumHeight(dp(76));
@@ -927,6 +985,7 @@ public final class MainActivity extends Activity {
         settingRow(items,"当前电脑",api==null?"尚未配对":api.address,()->new AlertDialog.Builder(this).setTitle("电脑连接").setMessage(api==null?"尚未配对":api.address+"\n\n"+SessionService.message).setPositiveButton("重新同步",(d,w)->beginPolling(true)).setNegativeButton("关闭",null).show());
         TextView networkHint=settingRow(items,"EasyTier 组网",EasyTierVpnService.state,this::easyTierDialog);
         settingRow(items,"UI 显示模式",displayModeLabel(),this::displaySettings);
+        settingRow(items,"离线语音模型",VoiceModels.ready(this)?"中文模型已下载 · 约 42 MB":"首次使用时下载 · 中文离线识别",()->openVoiceModels(false));
         settingRow(items,"通知与后台运行","任务完成、审批提醒与系统权限",this::notificationSettings);
         settingRow(items,"重新同步","重新连接电脑并刷新聊天状态",()->{beginPolling(true);toast("正在重新同步");});
         settingRow(items,"查看连接引导","预览扫码与配对页面，保留当前连接",()->{dialog.dismiss();connectionPage();});
@@ -1030,8 +1089,14 @@ public final class MainActivity extends Activity {
         if (api != null) {restoreSavedNetwork();beginPolling();}
         renderHandler.post(themeClock);
     }
-    @Override protected void onStop() { renderHandler.removeCallbacks(themeClock);if(!restoreVpnPermission)networkRestoreAttempted=false;visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } commands.clear();for(RemoteApi channel:commandChannels.values())channel.cancel();commandChannels.clear(); dismissRailPreview();dismissModelPopup();if(usagePopup!=null)usagePopup.dismiss();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
+    @Override protected void onPause(){
+        cancelVoice();
+        View focused=getCurrentFocus();if(focused!=null){((android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(focused.getWindowToken(),0);focused.clearFocus();}
+        if(root!=null)root.requestFocus();super.onPause();
+    }
+    @Override protected void onPostResume(){super.onPostResume();getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE|android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);if(root!=null)root.requestFocus();}
+    @Override protected void onStop() { cancelVoice();renderHandler.removeCallbacks(themeClock);if(!restoreVpnPermission)networkRestoreAttempted=false;visible = false; generation++;modelOpenWanted="";modelLoading.clear(); unregisterReceiver(updates); if (api != null) { getPreferences(MODE_PRIVATE).edit().putString("selected:" + api.fingerprint,selectedThreadId).apply(); api.cancel(); } commands.clear();for(RemoteApi channel:commandChannels.values())channel.cancel();commandChannels.clear(); dismissRailPreview();dismissModelPopup();if(usagePopup!=null)usagePopup.dismiss();if(jumpRail!=null)jumpRail.cancel();super.onStop(); }
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused&&appUpdates!=null)appUpdates.focus();}
     @Override public void startActivityForResult(android.content.Intent intent,int request,Bundle options){if(appUpdates!=null)appUpdates.external();try{super.startActivityForResult(intent,request,options);}catch(RuntimeException e){if(appUpdates!=null)appUpdates.navigationFailed();throw e;}}
-    @Override protected void onDestroy() { generation++;renderRevision++;renderHandler.removeCallbacks(prepareRows);renderHandler.removeCallbacks(flushRows);renderWorker.shutdownNow();chatFiles.close();if(appUpdates!=null)appUpdates.close(); if (api != null) api.cancel(); worker.shutdownNow(); super.onDestroy(); }
+    @Override protected void onDestroy() { cancelVoice();if(speechInput!=null)speechInput.destroy();if(voiceModels!=null)voiceModels.close();generation++;renderRevision++;renderHandler.removeCallbacks(prepareRows);renderHandler.removeCallbacks(flushRows);renderWorker.shutdownNow();chatFiles.close();if(appUpdates!=null)appUpdates.close(); if (api != null) api.cancel(); worker.shutdownNow(); super.onDestroy(); }
 }

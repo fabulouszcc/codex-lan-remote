@@ -11,6 +11,10 @@ final class UiIcon extends Drawable {
     @Override public void draw(Canvas canvas) {
         canvas.save(); canvas.translate(getBounds().left, getBounds().top); canvas.scale(getBounds().width()/24f, getBounds().height()/24f);
         switch (name) {
+            case "voice":line(canvas,5,10,5,14);line(canvas,8.5f,6,8.5f,18);line(canvas,12,9,12,15);line(canvas,15.5f,4,15.5f,20);line(canvas,19,10,19,14);break;
+            case "plus":line(canvas,12,5,12,19);line(canvas,5,12,19,12);break;
+            case "pin":Path pin=new Path();pin.moveTo(8,3);pin.lineTo(16,3);pin.lineTo(15,11);pin.lineTo(19,15);pin.lineTo(5,15);pin.lineTo(9,11);pin.close();canvas.drawPath(pin,paint);line(canvas,12,15,12,22);break;
+            case "folder": Path folder=new Path();folder.moveTo(3,7);folder.lineTo(3,5);folder.quadTo(3,3,5,3);folder.lineTo(10,3);folder.lineTo(12,6);folder.lineTo(20,6);folder.quadTo(22,6,22,8);folder.lineTo(20,20);folder.lineTo(3,20);folder.close();canvas.drawPath(folder,paint);line(canvas,3,9,21,9);break;
             case "phone": canvas.drawRoundRect(6,2,18,22,3,3,paint);line(canvas,10,5,14,5);line(canvas,11,19,13,19);break;
             case "desktop": canvas.drawRoundRect(2,3,22,17,2,2,paint);line(canvas,12,17,12,22);line(canvas,7,22,17,22);break;
             case "download": line(canvas,12,3,12,15);line(canvas,7,10,12,15);line(canvas,12,15,17,10);line(canvas,4,16,4,21);line(canvas,4,21,20,21);line(canvas,20,21,20,16);break;

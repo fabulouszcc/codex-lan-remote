@@ -3,8 +3,11 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { turnTimeline, turnInput } from './turn-timeline.mjs';
 import { accountUsage } from './account-usage.mjs';
+import { desktopSidebar, groupThreads, PINNED_SECTION_ID } from './sidebar.mjs';
+import { resolveDesktopBinary } from './desktop-binary.mjs';
+import { taskFailure } from './task-failure.mjs';
 export class HistoryReader {
-  constructor(binary) { this.binary = binary; this.pending = new Map(); this.sequence = 0; }
+  constructor(binary, {sidebarReader = desktopSidebar} = {}) { this.binary = binary; this.sidebarReader=sidebarReader;this.pending = new Map(); this.sequence = 0; }
   async connect() {
     if (this.initialized && this.child) return;
     if (this.connecting) return this.connecting;
@@ -12,7 +15,8 @@ export class HistoryReader {
     try { await this.connecting; } finally { this.connecting = null; }
   }
   async open() {
-    const child = spawn(this.binary, ['app-server', '--listen', 'stdio://'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const binary = await resolveDesktopBinary(this.binary);
+    const child = spawn(binary, ['app-server', '--listen', 'stdio://'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     child.stderr.on('data', () => {}); child.stdin.on('error', () => {});
     const failed = () => {
@@ -50,8 +54,19 @@ export class HistoryReader {
   }
   async list() {
     await this.connect();
-    const value = await this.request('thread/list', { limit: 100, sourceKinds: [], sortKey: 'updated_at' });
-    return (value.data || []).map(thread => ({ id: thread.id, name: thread.name || thread.preview?.slice(0, 70) || '未命名聊天', updatedAt: thread.updatedAt }));
+    const threads = [], seen = new Set(); let cursor;
+    do {
+      const value = await this.request('thread/list', { limit: 100, sourceKinds: [], sortKey: 'updated_at', ...(cursor ? {cursor} : {}) });
+      threads.push(...(value.data || []).filter(row => !row.ephemeral));
+      cursor=value.nextCursor;if(cursor && seen.has(cursor))throw Error('会话目录分页游标重复');if(cursor)seen.add(cursor);
+    } while(cursor);
+    this.threadDirectories=new Map(threads.filter(row=>typeof row.cwd==='string'&&row.cwd).map(row=>[row.id,row.cwd]));
+    const sidebar=await this.sidebarReader();
+    try{const pinned=[];let cursor;const seen=new Set();do{const page=await this.request('thread/list',{limit:100,sectionId:PINNED_SECTION_ID,sortKey:'section_position',...(cursor?{cursor}:{})});pinned.push(...(page.data||[]).map(row=>row.id));cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('置顶分页游标重复');if(cursor)seen.add(cursor);}while(cursor);sidebar._desktopPinnedIds=pinned;}catch{ /* Older desktop versions retain legacy pin order. */ }
+    return groupThreads([...new Map(threads.map(row=>[row.id,row])).values()], sidebar);
+  }
+  async queuedMessages(threadId){
+    const sidebar=await this.sidebarReader();const rows=sidebar['queued-follow-ups']?.[threadId];return Array.isArray(rows)?rows:[];
   }
   async models() {
     await this.connect();
@@ -83,11 +98,11 @@ export class HistoryReader {
     })();
     try { return await this.usageLoading; } finally { this.usageLoading = null; }
   }
-  async turns(threadId) {
+  async turns(threadId, {limit=50} = {}) {
     await this.connect();
-    const value = await this.request('thread/turns/list', { threadId, limit: 50, sortDirection: 'desc', itemsView: 'full' });
+    const value = await this.request('thread/turns/list', { threadId, limit, sortDirection: 'desc', itemsView: 'full' });
     return (value.data || []).reverse().map(turn => ({
-      id: turn.id, status: turn.status, startedAtMs: turn.startedAt ? turn.startedAt * 1000 : undefined,
+      id: turn.id, status: turn.status, startedAtMs: turn.startedAt ? turn.startedAt * 1000 : undefined,failureReason:taskFailure(turn),
       input: turnInput(turn),
       agentMessages: (turn.items || []).filter(item => item.type === 'agentMessage').map(item => item.text),
       timeline: turnTimeline(turn.items),

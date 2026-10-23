@@ -69,8 +69,8 @@ final class ChatNotifications {
             if (alert.getString("kind").equals("result")) {
                 String tag = "result:" + computer + ":" + thread + ":" + alert.getString("turnId"); if (!posted.add(tag)) continue;
                 manager.notify(tag, 1, new Notification.Builder(context, resultChannel(context)).setSmallIcon(android.R.drawable.stat_notify_chat)
-                    .setContentTitle(alert.getString("status").equals("completed") ? "Codex 任务已完成" : "Codex 任务失败")
-                    .setContentText("点击查看对应聊天").setContentIntent(open(thread)).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build());
+                    .setContentTitle("quota".equals(alert.optString("failureReason"))?"Codex 额度不足，任务已中断":"rateLimit".equals(alert.optString("failureReason"))?"Codex 请求受限，任务已中断":"contextLimit".equals(alert.optString("failureReason"))?"Codex 上下文已满，任务已中断":alert.getString("status").equals("completed") ? "Codex 任务已完成" : "Codex 任务失败")
+                    .setContentText("quota".equals(alert.optString("failureReason"))?"请检查账号额度或服务商余额，点击查看聊天":"点击查看对应聊天").setContentIntent(open(thread)).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build());
             } else {
                 JSONObject request = alert.getJSONObject("request"); String tag = "approval:" + computer + ":" + thread + ":" + request.optString("turnId") + ":" + request.get("id"); active.add(tag);
                 if (!posted.add(tag)) continue;

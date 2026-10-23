@@ -1,6 +1,6 @@
 {
   "name": "codex-lan-desktop",
-  "version": "0.4.17-preview",
+  "version": "0.5.0",
   "description": "手机连接：管理 Codex 手机远控、配对设备，以及已有网络或插件内置 EasyTier。",
   "author": { "name": "Codex LAN Remote" },
   "mcpServers": "./.mcp.json",

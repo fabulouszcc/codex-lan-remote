@@ -1,9 +1,9 @@
-import { getTurns } from './thread-state.mjs';
+import { getTurns, activeTurn } from './thread-state.mjs';
 import { userText } from './turn-timeline.mjs';
 
 export function pendingQuestions(state) {
   const turns = getTurns(state), answered = new Set();
-  const active=turns.findLast(turn=>turn.status==='inProgress');
+  const active=activeTurn(state);
   if(!active)return [];
   const completed=new Set((active.items||[]).filter(item=>item.type==='userInputResponse'&&item.completed===true).map(item=>String(item.requestId)));
   for (const turn of turns) for (const item of turn.items || []) {

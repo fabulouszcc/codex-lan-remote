@@ -7,6 +7,28 @@ import java.util.Iterator;
 
 /** Merge wire snapshots without erasing locally retained history on a reconnect. */
 final class MobileState {
+    static String replacementSelection(JSONArray catalog,String missing){
+        if(catalog!=null)for(int i=0;i<catalog.length();i++){JSONObject row=catalog.optJSONObject(i);if(row!=null&&!row.optString("id").isEmpty()&&!row.optString("id").equals(missing))return row.optString("id");}return "";
+    }
+    static JSONObject mergeHistory(JSONObject previous,JSONObject history) throws Exception {
+        JSONObject result=copyFields(previous);JSONArray before=previous.optJSONArray("threads"),after=new JSONArray();boolean found=false;
+        if(before!=null)for(int i=0;i<before.length();i++){
+            JSONObject row=before.getJSONObject(i);
+            if(row.optString("id").equals(history.optString("id"))){found=true;
+                if(row.optBoolean("ready")&&!row.optBoolean("metadataOnly"))row=copyFields(row);
+                else{
+                    JSONObject live=row;
+                    LinkedHashMap<String,JSONObject> turns=new LinkedHashMap<>();for(JSONObject source:new JSONObject[]{row,history}){JSONArray items=source.optJSONArray("turns");if(items!=null)for(int j=0;j<items.length();j++){JSONObject turn=items.getJSONObject(j);String id=turn.getString("id");turns.remove(id);turns.put(id,turn);}}
+                    // Stored content fills the cache; the latest live status always wins.
+                    JSONArray liveTurns=live.optJSONArray("turns");if(live.optBoolean("ready")&&liveTurns!=null)for(int j=0;j<liveTurns.length();j++){JSONObject current=liveTurns.getJSONObject(j),cached=turns.get(current.optString("id"));if(cached!=null){cached=copyFields(cached);for(String field:new String[]{"status","failureReason","startedAtMs"})if(current.has(field))cached.put(field,current.get(field));turns.put(current.optString("id"),cached);}}
+                    while(turns.size()>50)turns.remove(turns.keySet().iterator().next());row=copyFields(history).put("turns",new JSONArray(turns.values()));
+                    if(live.optBoolean("ready"))for(String field:new String[]{"ready","writable","activeTurnId","approvals","questions","queueSupported","queuedMessages","metadataOnly","model","reasoningEffort","serviceTier","revision","runtimeStatus","activity"})if(live.has(field))row.put(field,live.get(field));
+                }
+                row.put("historyUpdatedAt",history.optLong("historyUpdatedAt"));}
+            after.put(row);
+        }
+        if(!found)after.put(history);result.put("threads",after);return result;
+    }
     static boolean viewportAtBottom(int count,int lastVisible,int lastBottom,int height,int paddingBottom,int tolerance){
         return count==0||(lastVisible>=count-1&&lastBottom<=height-paddingBottom+tolerance);
     }
@@ -20,9 +42,15 @@ final class MobileState {
         return new java.net.URI("https",null,uri.getHost(),port,null,null,null).toASCIIString();
     }
     static String composerAction(JSONObject state, JSONObject thread, boolean sending, String draft) {
+        return composerAction(state,thread,sending,draft,"auto");
+    }
+    static String composerAction(JSONObject state, JSONObject thread, boolean sending, String draft,String mode) {
         if (!unavailableReason(state,thread,sending).isEmpty()) return "none";
         boolean active=!activeTurnId(thread).isEmpty(), hasText=draft!=null && !draft.trim().isEmpty();
-        return hasText ? (active ? "steer" : "start") : active ? "interrupt" : "none";
+        if(active&&hasText&&"steer".equals(mode))return "steer";
+        if(active&&hasText&&"queue".equals(mode)&&!thread.optBoolean("queueSupported"))return "none";
+        boolean queued=thread.optBoolean("queueSupported")&&(active||thread.optJSONArray("queuedMessages")!=null&&thread.optJSONArray("queuedMessages").length()>0);
+        return hasText ? (queued?"queue":active ? "steer" : "start") : active ? "interrupt" : "none";
     }
     static JSONArray timeline(JSONObject turn) throws Exception {
         JSONArray ordered=turn.optJSONArray("timeline");
@@ -118,8 +146,7 @@ final class MobileState {
                 thread.put("turns", new JSONArray(turns.values())); threads.put(id, thread);
             }
         }
-        // Bound encrypted phone cache; the desktop remains the complete history source.
-        while (threads.size() > 24) threads.remove(threads.keySet().iterator().next());
+        // Keep all catalog chats; each chat retains a bounded recent-turn window.
         JSONObject result = new JSONObject().put("threads", new JSONArray(threads.values()));
         if (previous != null) result.put("selectedThreadId", previous.optString("selectedThreadId"));
         if (incoming != null) result.put("version", incoming.optLong("version")).put("savedAt", System.currentTimeMillis());
@@ -151,11 +178,12 @@ final class MobileState {
             JSONArray turns = thread.optJSONArray("turns");
             if (turns != null) for (int j = 0; j < turns.length(); j++) {
                 JSONObject turn = turns.getJSONObject(j); String id = turn.getString("id"), status = turn.optString("status");
-                boolean finished = status.equals("completed") || status.equals("failed");
+                String failure=turn.optString("failureReason");boolean limited=failure.equals("quota")||failure.equals("rateLimit")||failure.equals("contextLimit");
+                boolean finished = status.equals("completed") || status.equals("failed") || limited&&(status.equals("interrupted")||status.equals("cancelled"));
                 boolean newlyFinished = !statuses.containsKey(threadId + ":" + id) && liveBaselines.containsKey(threadId)
                     && turn.optLong("startedAtMs") > liveBaselines.get(threadId);
                 if (finished && ("inProgress".equals(statuses.get(threadId + ":" + id)) || newlyFinished))
-                    result.put(new JSONObject().put("kind", "result").put("threadId", threadId).put("turnId", id).put("status", status));
+                    result.put(new JSONObject().put("kind", "result").put("threadId", threadId).put("turnId", id).put("status", status).put("failureReason",failure));
             }
             JSONArray approvals = thread.optJSONArray("approvals");
             if (approvals != null) for (int j = 0; j < approvals.length(); j++) {

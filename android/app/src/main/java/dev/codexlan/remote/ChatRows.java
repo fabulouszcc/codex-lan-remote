@@ -32,6 +32,7 @@ final class ChatRows {
         return text.isEmpty()?"已同步页面上下文":displayText(text);
     }
     static String displayText(String value){
+        String clean=value.replaceAll(":{1,2}codex-file-citation\\{(?:[^}\\\"'\\r\\n]|\\\"[^\\\"\\r\\n]*\\\"|'[^'\\r\\n]*')*\\}","");if(!clean.equals(value))value=clean.trim();
         String trimmed=value.trim();
         if(!trimmed.startsWith("<send_user_message_question_reply>")||!trimmed.endsWith("</send_user_message_question_reply>"))return value;
         try{
@@ -84,6 +85,8 @@ final class ChatRows {
                 }
             }
         }
+        JSONArray confirmed=thread.optJSONArray("confirmedMessages");if(confirmed!=null)for(int i=0;i<confirmed.length();i++){JSONObject item=confirmed.getJSONObject(i);rows.removeIf(row->row.type.equals("welcome"));rows.add(new Row(chat+":sent:"+item.optString("id"),"user",item));}
+        JSONArray queued=thread.optJSONArray("queuedMessages");if(queued!=null)for(int i=0;i<queued.length();i++){JSONObject item=queued.getJSONObject(i);rows.removeIf(row->row.type.equals("welcome"));rows.add(new Row(chat+":queued:"+item.optString("id"),"user",new JSONObject().put("text",item.optString("text")).put("delivery",item.optString("status").equals("outcome-unknown")?"发送状态待确认":"已排队 · 等待执行")));}
         JSONObject activity=thread.optJSONObject("activity");
         if(thread.optBoolean("ready")&&!thread.optString("activeTurnId").isEmpty())rows.add(new Row(chat+":activity","activity",activity==null?new JSONObject().put("label","正在思考…"):activity));
         JSONArray approvals=thread.optJSONArray("approvals");

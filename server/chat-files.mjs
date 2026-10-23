@@ -4,8 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const image = /\.(png|jpe?g|webp|gif|bmp)$/i;
-const text = /\.(txt|md|csv|tsv|json|jsonl|log|xml|ya?ml|toml|ini|tex|bib|py|js|mjs|cjs|ts|tsx|jsx|java|kt|kts|gradle|m|r|c|h|cpp|hpp|rs|go|css|html|svg|sh|ps1|bat|sql|diff|patch)$/i;
-const document = /\.(pdf|docx?|xlsx?|pptx?|zip|apk|mp4|mp3|wav)$/i;
+const text = /\.(txt|md|markdown|csv|tsv|json|jsonl|log|xml|ya?ml|toml|ini|tex|bib|py|js|mjs|cjs|ts|tsx|jsx|java|kt|kts|gradle|m|r|c|h|cpp|hpp|rs|go|css|html|svg|sh|ps1|bat|sql|diff|patch)$/i;
+const document = /\.(pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|zip|apk|mp4|mp3|wav)$/i;
 const forbidden = /(?:^|[\\/])(?:\.env(?:\.[^\\/]*)?|\.git|\.ssh|\.aws|\.codex(?![\\/](?:attachments|visualizations)(?:[\\/]|$))|secrets?|credentials?|[^\\/]*\.local\.(?:json|toml)|[^\\/]*\.(?:pem|key|p12|pfx|keystore))(?=[\\/]|$)/i;
 export function fileReference(value, label) {
   if (typeof value !== 'string' || value.length > 4096) return null;
@@ -28,6 +28,10 @@ export function messageFiles(value='', content=[]) {
   for(const match of value.matchAll(/!?\[([^\]\n]*)\]\((<[^>\n]+>|[^)\n]+)\)/g))add(match[2],match[1]);
   if(/# Files (?:mentioned|pasted) by the user:/.test(value))for(const match of value.matchAll(/^## [^\n]+?: (.+)$/gm))add(match[1]);
   for(const match of value.matchAll(/<image\s+[^>]*path="([^"]+)"[^>]*>/g))add(match[1]);
+  for(const match of value.matchAll(/:{1,2}codex-file-citation\{((?:[^}"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')*)\}/g)){
+    const attribute=/(?:^|\s)path=(?:"([^"\r\n]+)"|'([^'\r\n]+)')/.exec(match[1]);
+    if(attribute)add(attribute[1]||attribute[2]);
+  }
   return [...found.values()];
 }
 export function findChatFile(thread,id) {

@@ -20,6 +20,7 @@ export const PROTOCOL_VERSIONS = Object.freeze({
   'thread-follower-set-queued-follow-ups-state': 1,
   'thread-follower-remove-queued-message': 1,
   'thread-follower-clear-queued-messages': 1,
+  'thread-queued-followups-changed': 2,
   'thread-follower-command-approval-decision': 1,
   'thread-follower-file-approval-decision': 1,
   'thread-follower-submit-user-input': 1,
@@ -187,6 +188,10 @@ export class DesktopIpcClient extends EventEmitter {
     }
     if (message.type !== 'broadcast') return;
     if (message.targetClientIds && !message.targetClientIds.includes(this.#clientId)) return;
+    if(message.method==='thread-queued-followups-changed'){
+      const {conversationId,messages,hostId}=message.params||{},owner=this.#subscriptions.get(conversationId);
+      if(owner&&(!hostId||hostId==='local')&&message.sourceClientId===owner&&message.version===2&&Array.isArray(messages))this.emit('queuedMessages',{conversationId,messages});return;
+    }
     if (message.method !== 'thread-stream-state-changed') return;
     const { conversationId, hostId, change } = message.params || {};
     const owner = this.#subscriptions.get(conversationId);
@@ -269,6 +274,10 @@ export class DesktopIpcClient extends EventEmitter {
     return this.#control(threadId, 'thread-follower-set-queued-follow-ups-state', {
       state: { [threadId]: messages }, discardedMessageIds,
     }, ownerId);
+  }
+  removeQueuedMessage(threadId,messageId,ownerId){
+    if(typeof messageId!=='string'||messageId.length>160)throw Error('Invalid queued message ID');
+    return this.#control(threadId,'thread-follower-remove-queued-message',{messageId},ownerId);
   }
 
   replyCommandApproval(threadId, requestId, decision, ownerId) {

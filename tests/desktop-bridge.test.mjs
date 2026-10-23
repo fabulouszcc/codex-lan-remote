@@ -19,6 +19,39 @@ class Client extends EventEmitter {
 }
 const stored = [{ id: 'saved-turn', status: 'completed', input: 'old question', agentMessages: ['old answer'], toolResults: [] }];
 
+test('an old inProgress flag cannot keep a finished chat busy or expose stale approvals and questions',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  const state={turns:[{turnId:'old',status:'inProgress',items:[{type:'agentMessage',id:'q',questions:[{title:'Old?'}]}]},{turnId:'latest',status:'completed',items:[]}],requests:[{id:3,method:'item/commandExecution/requestApproval',params:{turnId:'old'}},{id:4,method:'tool/requestUserInput',params:{turnId:'old',questions:[]}}]};
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:state}});
+  const row=bridge.snapshot()[0];assert.equal(row.activeTurnId,'');assert.equal(row.activity,undefined);assert.deepEqual(row.approvals,[]);assert.deepEqual(row.questions,[]);
+  let started=false;client.startTurn=async()=>{started=true;};await bridge.command('active',{op:'start',text:'next'});assert.equal(started,true);await assert.rejects(bridge.command('active',{op:'interrupt',turnId:'old'}),/变化/);
+  state.turns[1].status='inProgress';client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:state}});assert.equal(bridge.snapshot()[0].activeTurnId,'latest');assert.ok(bridge.snapshot()[0].activity);
+});
+
+test('native FIFO preserves desktop queued messages and removal targets the live owner',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let queue=[{id:'desktop',prompt:'first',submission:{status:'queued'}}],removed;
+  bridge.historyReader.queuedMessages=async()=>structuredClone(queue);
+  client.setQueuedFollowUps=async(id,messages,options)=>{assert.equal(id,'active');assert.equal(options.ownerId,'owner');queue=messages;client.emit('queuedMessages',{conversationId:id,messages});};
+  client.removeQueuedMessage=async(...args)=>{removed=args;};await bridge.connect();
+  await Promise.all([bridge.command('active',{op:'queue',text:'second'}),bridge.command('active',{op:'queue',text:'third'})]);
+  assert.deepEqual(queue.map(row=>row.prompt),['first','second','third']);assert.equal(queue[1].submissionIntent,'queue');
+  assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(row=>row.text),['first','second','third']);
+  await bridge.command('active',{op:'queue-remove',messageId:'desktop'});assert.deepEqual(removed,['active','desktop','owner']);await assert.rejects(bridge.command('active',{op:'queue-remove',messageId:'unknown'}),/变化/);
+});
+
+test('new chat uses an authorized project directory without starting a task',async t=>{
+  let created,shown;const {bridge}=fixture([],{allowSelectedChats:true,chatCreator:{create:async options=>{created=options;return{id:'new-chat',name:options.name};},show:async id=>{shown=id;}}});t.after(()=>bridge.close());
+  bridge.historyReader.threadDirectories=new Map([['active','test-project']]);await bridge.connect();
+  await assert.rejects(bridge.createThread({baseThreadId:'unknown',name:'new'}),/项目/);
+  const result=await bridge.createThread({baseThreadId:'active',name:'phone chat'});assert.equal(created.cwd,'test-project');assert.equal(shown,'new-chat');assert.equal(result.id,'new-chat');assert.equal(bridge.snapshot().find(row=>row.id==='new-chat').ready,true);
+});
+
+test('background history sync neither follows nor enables control for unopened chats',async t=>{
+  const {bridge,client}=fixture([]);t.after(()=>bridge.close());await bridge.connect();
+  const history=await bridge.history('other');assert.equal(history.ready,false);assert.equal(history.historyReady,true);assert.equal(history.writable,false);assert.equal(history.turns[0].input,'old question');
+  assert.equal(bridge.entries.size,0);assert.deepEqual(client.enabled,[]);assert.deepEqual(client.historyRequests,[]);await assert.rejects(bridge.history('unknown'),/列表/);
+});
+
 test('desktop-completed input and requests from older turns never leave pending reply cards',()=>{
   const request={id:8,method:'tool/requestUserInput',params:{turnId:'active',questions:[{id:'answer',question:'Choose'}]}};
   const state={turns:[{turnId:'old',status:'inProgress',items:[{type:'agentMessage',id:'old-question',questions:[{title:'Historical'}]}]},{turnId:'active',status:'inProgress',items:[{type:'userInputResponse',requestId:8,completed:true}]}],requests:[request]};

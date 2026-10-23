@@ -5,14 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const tag = process.env.CODEX_LAN_RELEASE_TAG || 'v0.3.0-preview';
-if (!/^v\d+\.\d+\.\d+-preview$/.test(tag)) throw Error('Invalid preview release tag');
+if (!/^v\d+\.\d+\.\d+(?:-preview)?$/.test(tag)) throw Error('Invalid release tag');
 const version = tag.slice(1).replace(/-preview$/, '');
+const suffix = tag.endsWith('-preview') ? '-preview' : '';
 const repo = process.env.GH_REPO || process.env.GITHUB_REPOSITORY;
 if (!repo) throw Error('Set GH_REPO or GITHUB_REPOSITORY');
 const gh = args => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const release = JSON.parse(gh(['api', `repos/${repo}/releases/tags/${tag}`]));
 const rows = [];
-for (const name of [`codex-lan-desktop-${version}-preview.zip`, `codex-lan-${version === '0.3.0' ? '0.2.4' : version}-preview.apk`]) {
+for (const name of [`codex-lan-desktop-${version}${suffix}.zip`, `codex-lan-${version === '0.3.0' ? '0.2.4' : version}${suffix}.apk`]) {
   const asset = release.assets.find(row => row.name === name);
   if (!asset) continue;
   let digest = asset.digest?.match(/^sha256:([a-f0-9]{64})$/i)?.[1];

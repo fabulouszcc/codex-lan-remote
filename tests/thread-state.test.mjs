@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ThreadState, getTurns, summarizeThread } from '../server/thread-state.mjs';
+import { ThreadState, getTurns, summarizeThread, activeTurn } from '../server/thread-state.mjs';
 import { turnTimeline } from '../server/turn-timeline.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
+
+test('only the latest canonical turn determines live activity',()=>{
+  const old={turnId:'old',status:'inProgress',items:[]},last={turnId:'latest',status:'completed',items:[]};
+  const state={turnHistory:{kind:'canonical',history:{islands:[{entries:[{value:'old'},{value:'latest'}]}],entitiesByKey:{old,latest:last}}}};
+  assert.equal(activeTurn(state),null);assert.equal(summarizeThread(state).activity,undefined);last.status='inProgress';assert.equal(activeTurn(state).turnId,'latest');assert.ok(summarizeThread(state).activity);
+});
 test('streaming patches preserve old snapshots and share untouched large branches',()=>{
   const store=new ThreadState();store.apply({type:'snapshot',revision:1,conversationState:{large:{payload:'x'.repeat(1000000)},turns:[{text:'before'}]}});
   const before=store.state;store.apply({type:'patches',baseRevision:1,revision:2,patches:[{op:'replace',path:['turns',0,'text'],value:'after'}]});
@@ -36,9 +42,11 @@ test('accepted desktop steering input remains visible and canonical replacement 
   const turn={params:{input:first.content},items:[first,{type:'agentMessage',id:'a',text:'working'},steer]};
   const summary=summarizeThread({turns:[turn]}).turns[0];
   assert.equal(summary.input,'first\n\nfollow-up');
+  assert.equal(summary.timeline.find(item=>item.id==='s1').clientMessageId,'client2');
   assert.deepEqual(summary.timeline.map(i=>i.id),['u1','a','s1']);
   assert.ok(!JSON.stringify(summary).includes('PRIVATE'));
   turn.items.push({type:'userMessage',id:'u2',clientId:'client2',content:[{type:'text',text:'follow-up'}]});
+  assert.equal(turnTimeline(turn.items).find(item=>item.id==='u2').clientMessageId,'client2');
   assert.deepEqual(turnTimeline(turn.items).filter(i=>i.type==='user').map(i=>i.text),['first','follow-up']);
 });
 

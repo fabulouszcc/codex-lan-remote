@@ -34,6 +34,28 @@ class FakeBridge extends EventEmitter {
   async modelOptions(){return {models:[{model:'available',efforts:['high']}],current:{model:'available',effort:'high'}};}
   async command(id, command) { this.count++; await new Promise(resolve => setTimeout(resolve, 20)); return { accepted: true, text: command.text }; }
 }
+
+test('missing chat selection is distinct from a transport or permission failure',async t=>{
+  const f=await fixture(t),token=await f.pair(),headers={authorization:'Bearer '+token};
+  f.bridge.openThread=async()=>{const error=Error('Missing chat');error.code='THREAD_NOT_FOUND';throw error;};
+  assert.equal((await f.request('POST','/v1/select',{threadId:'gone'},headers)).status,404);
+  assert.equal((await f.request('GET','/v1/threads',undefined,headers)).status,200);
+  assert.equal((await f.request('GET','/v1/state',undefined,headers)).status,200);
+  f.bridge.openThread=async()=>{throw Error('Permission denied');};assert.equal((await f.request('POST','/v1/select',{threadId:'private'},headers)).status,403);
+});
+
+test('chat creation retries share one operation and require pairing',async t=>{
+  const f=await fixture(t);let calls=0;f.bridge.createThread=async()=>{calls++;await new Promise(resolve=>setTimeout(resolve,15));return{id:'created',name:'new'};};
+  const body={baseThreadId:'allowed-chat',name:'new'},key='new-chat-request-001';assert.equal((await f.request('POST','/v1/threads/new',body,{'idempotency-key':key})).status,401);
+  const token=await f.pair(),headers={authorization:'Bearer '+token,'idempotency-key':key};const responses=await Promise.all([f.request('POST','/v1/threads/new',body,headers),f.request('POST','/v1/threads/new',body,headers)]);
+  assert.deepEqual(responses.map(row=>row.status),[200,200]);assert.equal(calls,1);assert.equal((await f.request('POST','/v1/threads/new',{...body,name:'other'},headers)).status,409);assert.equal(calls,1);
+});
+
+test('desktop style new chat does not require a title',async t=>{
+  const f=await fixture(t);let received;f.bridge.createThread=async input=>{received=input;return{id:'new',name:'新聊天'};};
+  const token=await f.pair();const response=await f.request('POST','/v1/threads/new',{baseThreadId:'allowed-chat'},{authorization:'Bearer '+token,'idempotency-key':'untitled-chat-request-001'});
+  assert.equal(response.status,200);assert.equal(received.name,undefined);assert.equal(response.data.name,'新聊天');
+});
 test('installed desktop version is advertised separately from sync revision',async t=>{
   const f=await fixture(t,{desktopVersion:'0.5.0'});const info=await f.request('GET','/v1/info');assert.equal(info.data.desktopVersion,'0.5.0');const token=await f.pair();const state=await f.request('GET','/v1/state',undefined,{authorization:'Bearer '+token});assert.equal(state.data.desktopVersion,'0.5.0');assert.equal(typeof state.data.version,'number');
 });
@@ -187,6 +209,14 @@ test('catalog and selection require pairing and never accept an arbitrary thread
   assert.equal((await f.request('POST', '/v1/select', { threadId: 'arbitrary-private-id' }, headers)).status, 403);
   assert.equal((await f.request('POST', '/v1/select', { threadId: 'allowed-chat' }, headers)).status, 200);
   assert.equal(f.bridge.count, 0);
+});
+
+test('background chat history requires pairing and validates catalog membership',async t=>{
+  const f=await fixture(t);f.bridge.history=async id=>{if(id!=='allowed-chat')throw Error('聊天不在可同步列表中');return {id,ready:false,historyReady:true,turns:[]};};
+  assert.equal((await f.request('GET','/v1/history?threadId=allowed-chat')).status,401);
+  const token=await f.pair(),headers={authorization:'Bearer '+token};
+  assert.equal((await f.request('GET','/v1/history?threadId=allowed-chat',undefined,headers)).data.thread.historyReady,true);
+  assert.equal((await f.request('GET','/v1/history?threadId=unknown',undefined,headers)).status,403);
 });
 
 test('file bytes require pairing and an exact file reference in the authorized chat',async t=>{

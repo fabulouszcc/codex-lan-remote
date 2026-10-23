@@ -76,9 +76,16 @@ export function getTurns(state) {
 }
 
 import { turnTimeline, turnInput } from './turn-timeline.mjs';
+import { taskFailure } from './task-failure.mjs';
+export function activeTurn(state) {
+  // Older turns can retain stale inProgress flags after desktop recovery.
+  // Only the latest canonical turn can still be running.
+  const latest=getTurns(state).at(-1);
+  return latest?.status==='inProgress'?latest:null;
+}
 export function summarizeThread(state) {
   const turns = getTurns(state);
-  const active=turns.findLast(turn=>turn.status==='inProgress');
+  const active=activeTurn(state);
   let activity;
   if(active){
     const items=active.items||[],last=items.at(-1),reasoning=items.findLast(item=>item.type==='reasoning');
@@ -91,7 +98,7 @@ export function summarizeThread(state) {
     id: state?.id, cwd: state?.cwd, runtimeStatus: state?.threadRuntimeStatus?.type,
     turnCount: turns.length,
     turns: turns.map(turn => ({
-      id: turn.turnId, status: turn.status, startedAtMs: turn.turnStartedAtMs, durationMs: turn.durationMs,
+      id: turn.turnId, status: turn.status, startedAtMs: turn.turnStartedAtMs, durationMs: turn.durationMs,failureReason:taskFailure(turn),
       input: turnInput(turn),
       agentMessages: (turn.items || []).filter(item => item.type === 'agentMessage').map(item => item.text),
       timeline: turnTimeline(turn.items),
