@@ -49,4 +49,3 @@ public final class MemoryDeviceTest {
         System.out.println("PASS: 50 turns / "+size+" encrypted bytes preserved; corruption/truncation rejected; atomic failure retains prior data; legacy backup retained; elapsedMs="+(System.currentTimeMillis()-started));
     }
 }
-
