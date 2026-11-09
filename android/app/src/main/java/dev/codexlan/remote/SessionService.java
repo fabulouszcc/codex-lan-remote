@@ -57,12 +57,10 @@ public final class SessionService extends Service {
                 api = new RemoteApi(connection.getString("address"), connection.getString("fingerprint"), connection.getString("token"));
                 if(!api.fingerprint.equals(usageComputer)){usage=null;usageComputer=api.fingerprint;}
                 cache = new HistoryCache(this, api.fingerprint);
-                try { latest = MobileState.offline(cache.load()); } catch (Exception damaged) { latest = new JSONObject(); }
-                latest.put("computer", api.fingerprint); selection = latest.optString("selectedThreadId");
                 notifications = new ChatNotifications(this, api.fingerprint);
                 if (Build.VERSION.SDK_INT >= 34) startForeground(8, notifications.background(), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING);
                 else startForeground(8, notifications.background());
-                started = true; worker.execute(this::poll);
+                started = true; worker.execute(this::initializeSync);
             }
             if (intent.hasExtra("threadId") && !intent.getStringExtra("threadId").equals(selection)) { selection = intent.getStringExtra("threadId");recoveredSelectionFrom=""; refreshVersion++; }
             if ("refresh".equals(intent.getAction())) refreshVersion++;
@@ -83,6 +81,11 @@ public final class SessionService extends Service {
         return START_NOT_STICKY;
     }
     private void broadcast() { sendBroadcast(new Intent(UPDATE).setPackage(getPackageName())); }
+    private void initializeSync(){
+        try{latest=MobileState.offline(cache.load());}catch(Exception damaged){latest=new JSONObject();}
+        try{latest.put("computer",api.fingerprint);}catch(Exception ignored){}
+        if(selection.isEmpty())selection=latest.optString("selectedThreadId");broadcast();poll();
+    }
     private final Object pollLock = new Object();
     private RemoteApi pollApi;
     private RemoteApi rememberedLanApi;
@@ -113,7 +116,7 @@ public final class SessionService extends Service {
             JSONArray rows=channel.call("GET","/v1/threads",null,null).getJSONArray("threads");
             if(!stopped&&owner==api){
                 catalogRows=rows;
-                synchronized(stateLock){latest=new JSONObject(latest.toString()).put("catalog",rows);}
+                synchronized(stateLock){latest=MobileState.copyFields(latest).put("catalog",rows);}
                 if((selection==null||selection.isEmpty())&&rows.length()>0){selection=rows.getJSONObject(0).getString("id");refreshVersion++;cancelPoll();}
                 broadcast();
                 for(int i=0;i<rows.length()&&!stopped&&owner==api&&epoch==refreshVersion&&selectedSynchronized();i++){
@@ -149,7 +152,7 @@ public final class SessionService extends Service {
                         JSONArray available=polling.call("GET","/v1/threads",null,null).getJSONArray("threads");
                         if(MobileState.pollObsolete(epoch,refreshVersion,requestedSelection,selection,owner==api))continue;
                         String replacement=MobileState.replacementSelection(available,desired);catalogRows=available;recoveredSelectionFrom=desired;selection=replacement;
-                        refreshVersion++;synchronized(stateLock){latest=new JSONObject(latest.toString()).put("catalog",available).put("selectedThreadId",replacement).put("recoveredSelectionFrom",desired).put("online",true);}cache.save(latest);broadcast();version="";opened="";continue;
+                        refreshVersion++;synchronized(stateLock){latest=MobileState.copyFields(latest).put("catalog",available).put("selectedThreadId",replacement).put("recoveredSelectionFrom",desired).put("online",true);}cache.save(latest);broadcast();version="";opened="";continue;
                     }
                     version = "";
                 }
@@ -163,7 +166,7 @@ public final class SessionService extends Service {
                     merged.put("selectedThreadId",selection).put("recoveredSelectionFrom",recoveredSelectionFrom).put("catalog",catalogRows).put("online",true).put("computer",api.fingerprint);latest=merged;}
                 JSONArray arrived=incoming.optJSONArray("threads");if(arrived!=null)for(int i=0;i<arrived.length();i++){JSONObject row=arrived.getJSONObject(i);if(selection.equals(row.optString("id"))&&row.optBoolean("historyReady")){if(foregroundSyncedEpoch!=epoch||!selection.equals(foregroundSyncedSelection))catalogFetchedAt=0;foregroundSyncedEpoch=epoch;foregroundSyncedSelection=selection;break;}}
                 notifications.update(previous, merged); message = "已连接";rememberConnectedLan(owner);
-                if (MobileState.alerts(previous, merged).length() > 0 || System.currentTimeMillis() - savedAt > 2000) {
+                if (MobileState.alerts(previous, merged).length() > 0 || System.currentTimeMillis() - savedAt > 10000) {
                     try { cache.save(latest); savedAt = System.currentTimeMillis(); }
                     catch (Exception cacheError) { message = "已连接，但本地历史保存失败"; }
                 }

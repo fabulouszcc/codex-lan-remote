@@ -545,4 +545,35 @@ public class MobileStateTest {
         after.getJSONArray("threads").getJSONObject(0).getJSONArray("turns").getJSONObject(0).put("startedAtMs", 500);
         assertEquals(0, MobileState.alerts(before, after).length());
     }
+    private static final class NoSnapshotSerialization extends JSONObject {
+        @Override public String toString(){throw new AssertionError("Whole-snapshot serialization");}
+    }
+    @Test public void offlineCopiesOnlySafetyFlagsAndRetainsAllHistory()throws Exception{
+        String body=new String(new char[2*1024*1024]).replace('\0','x');
+        JSONArray turns=new JSONArray().put(new JSONObject().put("id","turn").put("input",body));
+        JSONObject thread=new JSONObject().put("id","chat").put("ready",true).put("turns",turns).put("approvals",new JSONArray().put("approval")).put("questions",new JSONArray().put("question"));
+        JSONObject original=new NoSnapshotSerialization().put("online",true).put("threads",new JSONArray().put(thread));
+        JSONObject offline=MobileState.offline(original),changed=offline.getJSONArray("threads").getJSONObject(0);
+        assertTrue(original.getBoolean("online"));assertTrue(thread.getBoolean("ready"));assertEquals(1,thread.getJSONArray("approvals").length());assertEquals(1,thread.getJSONArray("questions").length());
+        assertFalse(offline.getBoolean("online"));assertFalse(changed.getBoolean("ready"));assertEquals(0,changed.getJSONArray("approvals").length());assertEquals(0,changed.getJSONArray("questions").length());
+        assertNotSame(thread,changed);assertSame(turns,changed.getJSONArray("turns"));assertSame(body,changed.getJSONArray("turns").getJSONObject(0).getString("input"));
+    }
+    @Test public void rowSignaturesStayBoundedAndDetectContentChanges()throws Exception{
+        String body=new String(new char[2*1024*1024]).replace('\0','x');
+        JSONObject row=new NoSnapshotSerialization().put("text",body);
+        ChatRows.Row first=new ChatRows.Row("row","message",row);
+        ChatRows.Row same=new ChatRows.Row("row","message",new JSONObject().put("text",body));
+        ChatRows.Row changed=new ChatRows.Row("row","message",new JSONObject().put("text",body+"y"));
+        assertTrue(first.signature.length()<100);assertEquals(first.signature,same.signature);assertNotEquals(first.signature,changed.signature);
+    }
+    @Test public void streamingWriterPreservesEscapesUnicodeAndNestedValues()throws Exception{
+        JSONObject value=new NoSnapshotSerialization().put("text","中文🙂\n\t\r\b\f\u0001\"\\/").put("nested",new JSONArray().put(JSONObject.NULL).put(true).put(42).put(new JSONObject().put("x",1.25)));
+        java.io.StringWriter writer=new java.io.StringWriter();MemoryJson.write(value,writer);
+        JSONObject restored=new JSONObject(writer.toString());assertEquals(value.getString("text"),restored.getString("text"));assertEquals(MemoryJson.fingerprint(value),MemoryJson.fingerprint(restored));
+    }
+    @Test public void fingerprintsIgnoreObjectKeyOrderButRetainArrayOrder()throws Exception{
+        JSONObject first=new JSONObject().put("b",new JSONObject().put("z",1).put("a",2)).put("a",new JSONArray().put(1).put(2));
+        JSONObject second=new JSONObject().put("a",new JSONArray().put(1).put(2)).put("b",new JSONObject().put("a",2).put("z",1));
+        assertEquals(MemoryJson.fingerprint(first),MemoryJson.fingerprint(second));second.put("a",new JSONArray().put(2).put(1));assertNotEquals(MemoryJson.fingerprint(first),MemoryJson.fingerprint(second));
+    }
 }
