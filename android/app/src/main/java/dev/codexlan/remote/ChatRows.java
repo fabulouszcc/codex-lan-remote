@@ -57,7 +57,7 @@ final class ChatRows {
         final String key, type, signature;
         final JSONObject data;
         Row(String key, String type, JSONObject data) {
-            this.key=key; this.type=type; this.data=data; signature=type+":"+data.toString();
+            this.key=key; this.type=type; this.data=data; signature=type+":"+MemoryJson.fingerprint(data);
         }
     }
     static List<Row> build(JSONObject thread) throws Exception {

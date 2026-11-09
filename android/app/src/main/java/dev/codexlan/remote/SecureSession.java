@@ -17,7 +17,7 @@ final class SecureSession {
     private final SharedPreferences preferences;
     SecureSession(Context context) { this(context, "connection"); }
     SecureSession(Context context, String name) { preferences = context.getSharedPreferences(name, Context.MODE_PRIVATE); }
-    private static synchronized SecretKey key() throws Exception {
+    static synchronized SecretKey key() throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
         if (store.containsAlias(ALIAS)) return (SecretKey) store.getKey(ALIAS, null);
         KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");

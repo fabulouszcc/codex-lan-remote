@@ -110,7 +110,7 @@ final class MobileState {
         if (!thread.optBoolean("writable", true)) return "此聊天仅允许读取，需要在电脑授权后发送";
         return "";
     }
-    private static JSONObject copyFields(JSONObject source) throws Exception {
+    static JSONObject copyFields(JSONObject source) throws Exception {
         JSONObject result=new JSONObject();java.util.Iterator<String> keys=source.keys();
         while(keys.hasNext()){String key=keys.next();result.put(key,source.get(key));}return result;
     }
@@ -155,9 +155,13 @@ final class MobileState {
         return result;
     }
     static JSONObject offline(JSONObject value) throws Exception {
-        JSONObject result = new JSONObject(value.toString()); result.put("online", false);
-        JSONArray threads = result.optJSONArray("threads");
-        if (threads != null) for (int i = 0; i < threads.length(); i++) threads.getJSONObject(i).put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray());
+        JSONObject result = copyFields(value); result.put("online", false);
+        JSONArray threads = value.optJSONArray("threads");
+        if (threads != null) {
+            JSONArray offline=new JSONArray();
+            for(int i=0;i<threads.length();i++)offline.put(copyFields(threads.getJSONObject(i)).put("ready",false).put("approvals",new JSONArray()).put("questions",new JSONArray()));
+            result.put("threads",offline);
+        }
         return result;
     }
     static JSONArray alerts(JSONObject previous, JSONObject current) throws Exception {
