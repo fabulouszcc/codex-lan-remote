@@ -37,5 +37,5 @@ test('desktop file headers, image input and queued restore context use original 
 });
 
 test('validated skills use typed native input and never enter the file attachment header',()=>{
-  const message=messageInput('$pr test',{skills:[{name:'pr',path:'C:\\skills\\pr\\SKILL.md'}]});assert.deepEqual(message.input[1],{type:'skill',name:'pr',path:'C:\\skills\\pr\\SKILL.md'});assert.equal(message.input[0].text,'$pr test');assert.deepEqual(message.attachments,[]);
+  const message=messageInput('$pr test',{skills:[{name:'pr',path:'C:\\skills\\pr\\SKILL.md'}]});assert.deepEqual(message.input[1],{type:'skill',name:'pr',path:'C:\\skills\\pr\\SKILL.md'});assert.equal(message.input[0].text,'$pr test');assert.deepEqual(message.attachments,[]);assert.equal(message.restoreMessage.context.prompt,'[$pr](<C:/skills/pr/SKILL.md>) test');
 });

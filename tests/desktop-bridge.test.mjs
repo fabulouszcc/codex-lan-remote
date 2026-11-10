@@ -32,6 +32,13 @@ test('slash skills resolve only installed names and compact stays owner-bound, w
   bridge.entries.get('active').writable=true;client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:{turns:[{turnId:'busy',status:'inProgress',items:[]}]}}});await assert.rejects(bridge.command('active',{op:'compact'}),/任务结束/);
 });
 
+test('queued phone files persist native attachment context without duplicating file bytes',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let queue=[];
+  bridge.historyReader.queuedMessages=async()=>queue;client.setQueuedFollowUps=async(id,messages)=>{queue=messages;};await bridge.connect();
+  await bridge.command('active',{op:'queue',text:'read later',attachments:[{id:'file',name:'proof.txt',kind:'text',path:'C:\\attachments\\proof.txt'},{id:'image',name:'proof.png',kind:'image',path:'C:\\attachments\\proof.png'}]});
+  assert.equal(queue[0].context.fileAttachments[0].fsPath,'C:\\attachments\\proof.txt');assert.equal(queue[0].context.imageAttachments[0].localPath,'C:\\attachments\\proof.png');assert.equal(queue[0].prompt,'read later');assert.ok(JSON.stringify(queue).length<2048);
+});
+
 test('an old inProgress flag cannot keep a finished chat busy or expose stale approvals and questions',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
   const state={turns:[{turnId:'old',status:'inProgress',items:[{type:'agentMessage',id:'q',questions:[{title:'Old?'}]}]},{turnId:'latest',status:'completed',items:[]}],requests:[{id:3,method:'item/commandExecution/requestApproval',params:{turnId:'old'}},{id:4,method:'tool/requestUserInput',params:{turnId:'old',questions:[]}}]};
