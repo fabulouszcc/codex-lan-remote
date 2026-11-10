@@ -6,6 +6,7 @@ import { mkdir, readFile, appendFile } from 'node:fs/promises';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
 import { ChatCreator } from '../server/chat-creator.mjs';
+import { AutoTitles } from '../server/auto-title.mjs';
 import { createGateway } from '../server/gateway.mjs';
 import { atomicJson, readJson, addresses } from './config.mjs';
 import { desktopVersion } from './version.mjs';
@@ -45,7 +46,9 @@ export class GatewayRuntime {
     const devicesPath = join(this.root, 'secrets', 'devices.local.json');
     const devices = await readJson(devicesPath, []);
     const historyReader = config.codexBinary ? new HistoryReader(config.codexBinary) : undefined;
-    const bridge = new DesktopBridge(config.threads, { historyReader,backgroundHistoryReader:config.codexBinary?new HistoryReader(config.codexBinary):undefined, allowSelectedChats: config.allowSelectedChats,chatCreator:config.codexBinary?new ChatCreator(config.codexBinary):undefined });
+    const autoTitlePath=join(this.root,'auto-titles.local.json');
+    const autoTitles=config.codexBinary?new AutoTitles(config.codexBinary,{entries:await readJson(autoTitlePath,{}),save:entries=>atomicJson(autoTitlePath,entries)}):undefined;
+    const bridge = new DesktopBridge(config.threads, { historyReader,backgroundHistoryReader:config.codexBinary?new HistoryReader(config.codexBinary):undefined, allowSelectedChats: config.allowSelectedChats,chatCreator:config.codexBinary?new ChatCreator(config.codexBinary):undefined,autoTitles });
     const connectionAddresses={ primary:`https://${config.host}:${config.port}`, ...(config.lanHost ? {lan:`https://${config.lanHost}:${config.port}`} : {}) };
     const gateway = createGateway({ tls: this.tls, bridge, desktopVersion, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
     const servers=[gateway.server];

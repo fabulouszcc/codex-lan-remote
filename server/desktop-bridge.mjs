@@ -5,13 +5,14 @@ import { pendingQuestions, pendingAttention, validateAnswers } from './user-ques
 import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
-  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
+  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator,autoTitles } = {}) {
     super();
     this.entries = new Map(threads.map(thread => [thread.id, { ...thread, writable: true, history: [], store: new ThreadState(), ready: false, consumed: new Set() }]));
     this.historyReader = historyReader;
     this.backgroundHistoryReader=backgroundHistoryReader;
     this.allowSelectedChats = allowSelectedChats;
     this.chatCreator=chatCreator;
+    this.autoTitles=autoTitles;
     this.catalogRows = threads;
     this.clientFactory = clientFactory;
     this.generation = 0;
@@ -40,7 +41,7 @@ export class DesktopBridge extends EventEmitter {
       if (generation !== this.generation) return;
       const entry = this.entries.get(conversationId);
       if (!entry) return;
-      try { entry.store.apply(change); entry.ready = true; this.emit('changed'); }
+      try { entry.store.apply(change); entry.ready = true; this.emit('changed');this.maybeAutoTitle(entry,generation); }
       catch { this.repairEntry(entry, generation); }
     });
     client.on('disconnected', () => {
@@ -63,7 +64,7 @@ export class DesktopBridge extends EventEmitter {
       try { this.catalogRows = await this.historyReader.list(); this.catalogAt = Date.now(); } catch { /* Keep known chats available. */ }
     }
     const rows = new Map(this.catalogRows.map(row => [row.id, row]));
-    for (const entry of this.entries.values()) {if(entry.autoName&&rows.get(entry.id)?.name)entry.name=rows.get(entry.id).name;rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });}
+    for (const entry of this.entries.values()) {if(rows.get(entry.id)?.name)entry.name=rows.get(entry.id).name;rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });}
     return [...rows.values()];
   }
   async usage() {
@@ -75,6 +76,7 @@ export class DesktopBridge extends EventEmitter {
     const cwd=this.entries.get(baseThreadId)?.store.state?.cwd||this.historyReader?.threadDirectories?.get(baseThreadId);if(!cwd)throw Error('当前会话工作目录未就绪，请选择其他项目');
     const title=typeof name==='string'?name.trim().slice(0,80):'';
     const created=await this.chatCreator.create({cwd,name:title,model:this.entries.get(baseThreadId)?.store.state?.latestModel});
+    if(!title)await this.autoTitles?.remember(created.id,created.name).catch(()=>{});
     const row={id:created.id,name:created.name,groupId:base.groupId==='pinned'?'chats':base.groupId,groupName:base.groupId==='pinned'?'其他会话':base.groupName,groupOrder:base.groupOrder,updatedAt:Date.now()/1000};
     this.catalogRows.push(row);this.entries.set(created.id,{...row,autoName:!title,writable:true,history:[],store:new ThreadState(),ready:false,consumed:new Set()});this.client?.enableThreadControl(created.id);this.catalogAt=0;this.emit('changed');
     try{await this.chatCreator.show(created.id);}catch{/* Keep the created chat; never create a duplicate because opening the window failed. */}
@@ -148,6 +150,16 @@ export class DesktopBridge extends EventEmitter {
       if(!this.closed&&generation===this.generation&&this.entries.get(entry.id)===entry&&(entry.queueEpoch||0)===epoch){entry.nativeQueue=queue;this.emit('changed');}
     }catch{/* A temporary read failure must not erase the last observed queue. */}
     finally{entry.queueLoading=false;}
+  }
+  maybeAutoTitle(entry,generation){
+    if(!entry.ready||!this.autoTitles?.wants(entry.id))return;
+    const turns=summarizeThread(entry.store.state).turns;
+    if(turns.at(-1)?.status!=='completed')return;
+    const prompt=turns.find(turn=>turn.input)?.input;if(!prompt)return;
+    void this.autoTitles.generate({threadId:entry.id,cwd:entry.store.state?.cwd,prompt,
+      canApply:()=>!this.closed&&generation===this.generation&&this.entries.get(entry.id)===entry}).then(title=>{
+      if(title&&!this.closed){entry.name=title;this.catalogAt=0;this.emit('changed');}
+    }).catch(()=>{});
   }
   repairEntry(entry,generation){
     entry.ready=false;entry.resubscribe=true;entry.repairPending=true;this.emit('changed');
@@ -297,5 +309,5 @@ export class DesktopBridge extends EventEmitter {
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
     return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
   }
-  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
+  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();this.autoTitles?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
 }

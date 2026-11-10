@@ -189,3 +189,11 @@ test('adding a mobile draft never copies server queue entries into the local que
 test('legacy owner broadcasts do not erase cached server queue entries',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',clientUserMessageId:'echo',serverQueue:true,prompt:'server message'}];await bridge.connect();client.emit('queuedMessages',{conversationId:'active',messages:[{id:'echo',prompt:'duplicate'},{id:'local',prompt:'new local'}]});assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(r=>r.id),['server','local']);
 });
+
+test('catalog refresh reflects desktop renames for previously opened chats',async t=>{
+  const {bridge}=fixture([{id:'active',name:'stale'}]);t.after(()=>bridge.close());await bridge.connect();bridge.historyReader.list=async()=>[{id:'active',name:'desktop renamed'}];bridge.catalogAt=0;assert.equal((await bridge.catalog()).find(row=>row.id==='active').name,'desktop renamed');assert.equal(bridge.snapshot()[0].name,'desktop renamed');
+});
+test('automatic naming waits for completion and is limited to tracked phone-created chats',async t=>{
+  const named=[];const autoTitles={wants:id=>id==='active',generate:async options=>{named.push(options);return 'generated';},close(){}};const {bridge,client}=fixture([{id:'active'}],{autoTitles});t.after(()=>bridge.close());await bridge.connect();
+  const state={cwd:'project',turns:[{turnId:'t',status:'inProgress',items:[{type:'userMessage',id:'u',content:[{type:'text',text:'first request'}]}]}],requests:[]};client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:state}});assert.equal(named.length,0);state.turns[0].status='completed';client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:state}});await Promise.resolve();assert.equal(named.length,1);assert.equal(named[0].prompt,'first request');assert.equal(bridge.snapshot()[0].name,'generated');
+});
