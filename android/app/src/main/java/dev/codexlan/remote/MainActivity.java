@@ -132,7 +132,7 @@ public final class MainActivity extends Activity {
         try{
             if(new SecureSession(this,"easytier").load()==null)return;
             networkRestoreAttempted=true;
-            android.content.Intent permission=android.net.VpnService.prepare(this);
+            android.content.Intent permission=EasyTierVpnService.permissionIntent(this);
             if(permission==null)startForegroundService(new android.content.Intent(this,EasyTierVpnService.class));
             else{restoreVpnPermission=true;startActivityForResult(permission,206);}
         }catch(Exception ignored){toast("自动组网未启动，请在设置中检查 EasyTier");}
@@ -293,7 +293,7 @@ public final class MainActivity extends Activity {
         try{PairingCoordinator.prepare(this,info);continuePendingPairing();}catch(Exception error){failed.accept(error(error));}
     }
     private void continuePendingPairing(){
-        try{android.content.Intent permission=android.net.VpnService.prepare(this);if(permission==null)PairingCoordinator.start(this);else startActivityForResult(permission,205);refreshPairingUi();}
+        try{android.content.Intent permission=EasyTierVpnService.permissionIntent(this);if(permission==null)PairingCoordinator.start(this);else startActivityForResult(permission,205);refreshPairingUi();}
         catch(Exception error){toast(error(error));}
     }
     private void refreshPairingUi(){
@@ -337,7 +337,7 @@ public final class MainActivity extends Activity {
                     Runnable verify=()->{
                         if(!direct&&!EasyTierVpnService.running){try{startedEt[0]=true;startForegroundService(new android.content.Intent(this,EasyTierVpnService.class));}catch(Exception e){busy[0]=false;feedback.setText("无法启动组网，请在设置中检查 EasyTier");return;}}
                         worker.execute(()->{try{
-                            if(!direct){long until=android.os.SystemClock.uptimeMillis()+20000;while(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口"))&&android.os.SystemClock.uptimeMillis()<until)Thread.sleep(200);if(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口")))throw new Exception("EasyTier 未就绪，请在设置中检查组网");}
+                            if(!direct){long until=android.os.SystemClock.uptimeMillis()+20000;while(!(EasyTierVpnService.ready)&&android.os.SystemClock.uptimeMillis()<until)Thread.sleep(200);if(!(EasyTierVpnService.ready))throw new Exception("EasyTier 未就绪，请在设置中检查组网");}
                             JSONObject verified=candidate.call("GET","/v1/state",null,null);
                             runOnUiThread(()->{if(isDestroyed()||api!=original||generation!=epoch||!menu[0].isShowing())return;try{
                                 JSONObject connection=storage.load();if(connection==null)throw new Exception("配对信息已清除");addresses.put(previous,original.address).put(mode,candidate.address);connection.put("address",candidate.address).put("addresses",addresses);storage.save(ConnectionHistory.remember(connection,candidate.address,mode));
@@ -346,7 +346,7 @@ public final class MainActivity extends Activity {
                             }catch(Exception e){busy[0]=false;feedback.setText("切换未确认，请重试");}});
                         }catch(Exception e){runOnUiThread(()->{cleanup.run();if(menu[0].isShowing()){busy[0]=false;feedback.setText("连接未确认，请在设置中检查网络和地址");}});}});
                     };
-                    if(!direct&&!EasyTierVpnService.running){try{if(new SecureSession(this,"easytier").load()==null){busy[0]=false;feedback.setText("请先在设置 → EasyTier 组网中保存配置");return;}android.content.Intent permission=android.net.VpnService.prepare(this);if(permission!=null){switchVpnPermission=allowed->{if(allowed&&menu[0].isShowing())verify.run();else{busy[0]=false;feedback.setText("未授予 VPN 权限");}};startActivityForResult(permission,202);return;}}catch(Exception e){busy[0]=false;feedback.setText("无法读取组网配置，请在设置中检查");return;}}
+                    if(!direct&&!EasyTierVpnService.running){try{if(new SecureSession(this,"easytier").load()==null){busy[0]=false;feedback.setText("请先在设置 → EasyTier 组网中保存配置");return;}android.content.Intent permission=EasyTierVpnService.permissionIntent(this);if(permission!=null){switchVpnPermission=allowed->{if(allowed&&menu[0].isShowing())verify.run();else{busy[0]=false;feedback.setText("未授予 VPN 权限");}};startActivityForResult(permission,202);return;}}catch(Exception e){busy[0]=false;feedback.setText("无法读取组网配置，请在设置中检查");return;}}
                     verify.run();
                 });
             }
@@ -820,7 +820,8 @@ public final class MainActivity extends Activity {
             LinearLayout form = vertical(); settingsScroll.addView(form); page.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1));
             LinearLayout statusCard = easyTierCard(form, "连接状态");
             TextView networkStatus = text(EasyTierVpnService.state, 16, accent); statusCard.addView(networkStatus);
-            statusCard.addView(text("通过虚拟网络连接电脑，首次启动需允许 Android VPN。", 13, muted));
+            statusCard.addView(text("兼容模式只连接本 App，不占用系统 VPN；关闭后使用 Android 虚拟网卡。", 13, muted));
+            android.widget.Switch compatible=new android.widget.Switch(this);compatible.setText("兼容其他 VPN");compatible.setMinHeight(dp(48));compatible.setTextColor(foreground);compatible.setChecked(EasyTierVpnService.usesProxy(this));statusCard.addView(compatible);
             LinearLayout identityCard = easyTierCard(form, "网络身份");
             identityCard.addView(text("与电脑填写相同的网络名称和密钥。密钥加密保存在本机。", 12, muted));
             EditText name = field("网络名称"), secret = field("网络密钥"), cidr = field("手机虚拟 IPv4/前缀"), peers = field("节点地址，每行一个，例如 tcp://节点IP:11010");
@@ -862,6 +863,7 @@ public final class MainActivity extends Activity {
                         if (EasyTierVpnService.running) throw new Exception("请先断开 EasyTier，再修改配置或重连");
                         new EasyTierProfile(name.getText().toString(), secret.getText().toString(), cidr.getText().toString(), peers.getText().toString(), dhcp.isChecked());
                         settings.save(new JSONObject().put("name", name.getText().toString()).put("secret", secret.getText().toString()).put(dhcp.isChecked()?"networkCidr":"cidr", cidr.getText().toString()).put("dhcp",dhcp.isChecked()).put("peers", peers.getText().toString()));
+                        if(!getSharedPreferences("MainActivity",MODE_PRIVATE).edit().putBoolean("easyTierNoTun",compatible.isChecked()).commit())throw new Exception("无法保存连接模式");
                         boolean shouldConnect = view == connect;
                         dialog.dismiss();
                         if (shouldConnect) {
@@ -879,7 +881,7 @@ public final class MainActivity extends Activity {
             android.os.Handler updater = new android.os.Handler(getMainLooper());
             Runnable refresh = new Runnable() { public void run() {
                 networkStatus.setText(EasyTierVpnService.state); boolean editable = !EasyTierVpnService.running;
-                for (View input : new View[] { name, secret, cidr, dhcp, peers, official, connect, saveOnly }) { input.setEnabled(editable); input.setAlpha(editable ? 1f : .45f); }
+                for (View input : new View[] { name, secret, cidr, dhcp, peers, official, compatible, connect, saveOnly }) { input.setEnabled(editable); input.setAlpha(editable ? 1f : .45f); }
                 disconnect.setVisibility(editable ? View.GONE : View.VISIBLE);
                 if (dialog.isShowing()) updater.postDelayed(this, 1000);
             } };
@@ -906,10 +908,10 @@ public final class MainActivity extends Activity {
     }
     private void startEasyTier() {
         try { startForegroundService(new android.content.Intent(this, EasyTierVpnService.class));getPreferences(MODE_PRIVATE).edit().putString("networkMode","easytier").apply(); toast("正在启动，请在 EasyTier 设置中查看状态"); }
-        catch (Exception e) { toast("系统未允许启动 VPN 服务，请保持 App 在前台重试"); }
+        catch (Exception e) { toast("系统未允许启动组网服务，请保持 App 在前台重试"); }
     }
     private void prepareEasyTier() {
-        android.content.Intent permission = android.net.VpnService.prepare(this);
+        android.content.Intent permission = EasyTierVpnService.permissionIntent(this);
         if (permission == null) startEasyTier(); else startActivityForResult(permission, 200);
     }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
@@ -1085,7 +1087,7 @@ public final class MainActivity extends Activity {
         android.content.IntentFilter filter = new android.content.IntentFilter(SessionService.UPDATE);filter.addAction(PairingCoordinator.UPDATE);filter.addAction(SessionService.USAGE_UPDATE);
         if (android.os.Build.VERSION.SDK_INT >= 33) registerReceiver(updates, filter, RECEIVER_NOT_EXPORTED); else registerReceiver(updates, filter);
         refreshPairingUi();
-        if(api==null&&connectionGuideVisible&&!PairingCoordinator.busy()&&!PairingCoordinator.failed())try{JSONObject pending=PairingCoordinator.pending(this);if(pending!=null&&"waiting".equals(pending.optString("phase"))&&android.net.VpnService.prepare(this)==null)PairingCoordinator.start(this);}catch(Exception ignored){}
+        if(api==null&&connectionGuideVisible&&!PairingCoordinator.busy()&&!PairingCoordinator.failed())try{JSONObject pending=PairingCoordinator.pending(this);if(pending!=null&&"waiting".equals(pending.optString("phase"))&&EasyTierVpnService.permissionIntent(this)==null)PairingCoordinator.start(this);}catch(Exception ignored){}
         if (api != null) {restoreSavedNetwork();beginPolling();}
         renderHandler.post(themeClock);
     }

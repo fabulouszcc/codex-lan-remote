@@ -23,7 +23,7 @@
             android:exported="false" android:foregroundServiceType="specialUse">
             <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="false" />
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated EasyTier VPN connection for remote access to the user's Codex computer" />
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-initiated encrypted EasyTier device network for remote access to the user's Codex computer" />
         </service>
         <service android:name=".SessionService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
     </application>

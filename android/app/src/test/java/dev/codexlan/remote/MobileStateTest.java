@@ -545,4 +545,14 @@ public class MobileStateTest {
         after.getJSONArray("threads").getJSONObject(0).getJSONArray("turns").getJSONObject(0).put("startedAtMs", 500);
         assertEquals(0, MobileState.alerts(before, after).length());
     }
+    @Test public void easyTierNoTunConfigurationAddsOnlyTheAppLoopbackProxy()throws Exception{
+        EasyTierProfile profile=new EasyTierProfile("fixture","secret","10.77.0.2/24","tcp://127.0.0.1:1");String normal=profile.toml(),proxy=profile.toml(23456);
+        assertFalse(normal.contains("socks5_proxy"));assertFalse(normal.contains("no_tun"));assertTrue(proxy.contains("socks5_proxy = \"socks5://127.0.0.1:23456\""));assertTrue(proxy.indexOf("socks5_proxy")<proxy.indexOf("[network_identity]"));assertTrue(proxy.contains("no_tun = true"));assertTrue(proxy.contains("use_smoltcp = true"));assertTrue(proxy.contains("enable_encryption = true"));
+        try{profile.toml(80);fail("invalid proxy port");}catch(IllegalArgumentException expected){}
+    }
+    @Test public void easyTierProxyRoutesOnlyTheVirtualSubnetAndCanBeCleared()throws Exception{
+        EasyTierProfile profile=new EasyTierProfile("fixture","","10.77.0.2/24","tcp://127.0.0.1:1");
+        try{EasyTierProxy.configure(profile,23456);assertEquals(java.net.Proxy.Type.SOCKS,EasyTierProxy.forHost("10.77.0.1").type());assertEquals("127.0.0.1",((java.net.InetSocketAddress)EasyTierProxy.forHost("10.77.0.1").address()).getHostString());assertSame(java.net.Proxy.NO_PROXY,EasyTierProxy.forHost("10.77.1.1"));assertSame(java.net.Proxy.NO_PROXY,EasyTierProxy.forHost("10.77.0.1.example.invalid"));assertSame(java.net.Proxy.NO_PROXY,EasyTierProxy.forHost("127.0.0.1"));try{EasyTierProxy.configure(profile,80);fail("invalid port");}catch(IllegalArgumentException expected){}}
+        finally{EasyTierProxy.clear();}assertSame(java.net.Proxy.NO_PROXY,EasyTierProxy.forHost("10.77.0.1"));
+    }
 }

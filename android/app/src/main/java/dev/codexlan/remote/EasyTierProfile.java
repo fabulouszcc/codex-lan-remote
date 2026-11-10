@@ -55,13 +55,24 @@ public final class EasyTierProfile {
         return result.append('"').toString();
     }
     public String toml() {
+        return toml(0);
+    }
+    public String toml(int socksPort) {
+        if(socksPort!=0&&(socksPort<1024||socksPort>65535))throw new IllegalArgumentException("本地代理端口无效");
         StringBuilder config = new StringBuilder("instance_name = ").append(quote(INSTANCE))
             .append("\nhostname = \"codex-lan-android\"\ndhcp = ").append(dhcp);
         if (!dhcp) config.append("\nipv4 = ").append(quote(address + "/" + prefix));
-        config.append("\nlisteners = []\nrpc_portal = \"127.0.0.1:0\"\n[network_identity]\nnetwork_name = ").append(quote(name))
+        config.append("\nlisteners = []\nrpc_portal = \"127.0.0.1:0\"\n");
+        if(socksPort>0)config.append("socks5_proxy = \"socks5://127.0.0.1:").append(socksPort).append("\"\n");
+        config.append("[network_identity]\nnetwork_name = ").append(quote(name))
             .append("\nnetwork_secret = ").append(quote(secret)).append('\n');
         for (String peer : peers.split("\\r?\\n")) if (!peer.trim().isEmpty()) config.append("\n[[peer]]\nuri = ").append(quote(peer.trim())).append('\n');
-        return config.append("\n[flags]\nenable_encryption = true\nenable_ipv6 = false\n").toString();
+        config.append("\n[flags]\nenable_encryption = true\nenable_ipv6 = false\n");
+        if(socksPort>0)config.append("no_tun = true\nuse_smoltcp = true\n");
+        return config.toString();
+    }
+    public boolean contains(String host){
+        try{long mask=(0xffffffffL<<(32-prefix))&0xffffffffL;return (ipv4(host)&mask)==ipv4(subnet);}catch(Exception ignored){return false;}
     }
     public EasyTierProfile assigned(org.json.JSONObject value) throws Exception {
         org.json.JSONObject raw = value.getJSONObject("address");

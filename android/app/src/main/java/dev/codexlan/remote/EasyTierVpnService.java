@@ -18,6 +18,9 @@ import java.util.concurrent.TimeUnit;
 public final class EasyTierVpnService extends VpnService {
     public static volatile String state = "未连接";
     public static volatile boolean running;
+    public static volatile boolean ready;
+    public static boolean usesProxy(android.content.Context context){return context.getSharedPreferences("MainActivity",MODE_PRIVATE).getBoolean("easyTierNoTun",false);}
+    public static Intent permissionIntent(android.content.Context context){return usesProxy(context)?null:VpnService.prepare(context);}
     private static volatile EasyTierVpnService instance;
     private ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private ParcelFileDescriptor tun;
@@ -25,6 +28,7 @@ public final class EasyTierVpnService extends VpnService {
     private volatile boolean stopping;
     private volatile boolean cleanupComplete;
     private EasyTierProfile profile;
+    private boolean proxyMode;
     private long startedAt;
     private String notifiedState = "";
     private String tunCidr = "";
@@ -39,7 +43,7 @@ public final class EasyTierVpnService extends VpnService {
             worker=Executors.newSingleThreadScheduledExecutor();stopping=false;cleanupComplete=false;
         }
         if (running) return START_NOT_STICKY;
-        running = true; state = "正在启动 EasyTier…";
+        running = true;ready=false;proxyMode=usesProxy(this);state = "正在启动 EasyTier…";
         NotificationManager notifications = getSystemService(NotificationManager.class);
         NotificationChannel channel = new NotificationChannel("easytier", "EasyTier 运行提示（可关闭）", NotificationManager.IMPORTANCE_LOW);
         channel.setShowBadge(false); channel.setSound(null, null); channel.enableVibration(false);
@@ -53,8 +57,16 @@ public final class EasyTierVpnService extends VpnService {
                 boolean dhcp = saved.optBoolean("dhcp");
                 profile = new EasyTierProfile(saved.getString("name"), saved.optString("secret"), saved.getString(dhcp?"networkCidr":"cidr"), saved.getString("peers"),dhcp);
                 if (stopping) return;
+                int socksPort=0;
+                if(proxyMode){
+                    try(java.net.ServerSocket reservation=new java.net.ServerSocket()){
+                        reservation.bind(new java.net.InetSocketAddress("127.0.0.1",0));socksPort=reservation.getLocalPort();
+                    }
+                    EasyTierProxy.configure(profile,socksPort);
+                }else EasyTierProxy.clear();
                 // Never log config or native error strings: they may contain network credentials.
-                if (EasyTierJNI.INSTANCE.parseConfig(profile.toml()) != 0 || EasyTierJNI.INSTANCE.runNetworkInstance(profile.toml()) != 0) throw new Exception();
+                String config=profile.toml(socksPort);
+                if (EasyTierJNI.INSTANCE.parseConfig(config) != 0 || EasyTierJNI.INSTANCE.runNetworkInstance(config) != 0) throw new Exception();
                 nativeStarted = true; startedAt = System.currentTimeMillis(); state = "正在等待虚拟网络…";
                 worker.scheduleWithFixedDelay(this::monitor, 0, 3, TimeUnit.SECONDS);
             } catch (Throwable error) { stopNetwork("EasyTier 启动失败，请检查配置和原生库兼容性"); }
@@ -86,7 +98,7 @@ public final class EasyTierVpnService extends VpnService {
             }
             EasyTierProfile assigned=profile.assigned(node.getJSONObject("virtual_ipv4"));
             String cidr=assigned.address+"/"+assigned.prefix;
-            if (tun == null || !cidr.equals(tunCidr)) {
+            if (!proxyMode&&(tun == null || !cidr.equals(tunCidr))) {
                 Builder builder = new Builder().setSession("Codex LAN EasyTier").setMtu(1380).setBlocking(false)
                     .addAddress(assigned.address, assigned.prefix).addRoute(assigned.subnet, assigned.prefix);
                 if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false);
@@ -99,7 +111,8 @@ public final class EasyTierVpnService extends VpnService {
                 tunCidr=cidr;
             }
             int peers = instance.optJSONArray("routes") == null ? 0 : instance.optJSONArray("routes").length();
-            state = "虚拟接口 " + cidr + (profile.dhcp?" · DHCP":"") + " · 路由节点 " + peers;
+            ready=true;
+            state = (proxyMode?"免 VPN 连接 ":"虚拟接口 ") + cidr + (profile.dhcp?" · DHCP":"") + " · 路由节点 " + peers;
             if (!state.equals(notifiedState)) {
                 notifiedState = state;
                 getSystemService(NotificationManager.class).notify(7, notification());
@@ -112,7 +125,7 @@ public final class EasyTierVpnService extends VpnService {
         else context.stopService(new Intent(context,EasyTierVpnService.class));
     }
     private synchronized void stopNetwork(String finalState){
-        if(stopping)return;stopping=true;running=false;
+        if(stopping)return;stopping=true;running=false;ready=false;EasyTierProxy.clear();
         // Android binds active VPN services. Release the native-owned duplicate
         // and our TUN before stopSelf, otherwise onDestroy may never be called.
         worker.execute(()->{
@@ -123,9 +136,9 @@ public final class EasyTierVpnService extends VpnService {
         });
         worker.shutdown();
     }
-    @Override public void onRevoke(){stopNetwork("VPN 授权已撤销");}
+    @Override public void onRevoke(){if(!proxyMode)stopNetwork("VPN 授权已撤销");}
     @Override public void onDestroy(){
-        stopNetwork(state.startsWith("虚拟接口")||state.startsWith("正在")?"已断开":state);
+        stopNetwork(state.startsWith("虚拟接口")||state.startsWith("免 VPN")||state.startsWith("正在")?"已断开":state);
         if(instance==this)instance=null;
         super.onDestroy();
     }

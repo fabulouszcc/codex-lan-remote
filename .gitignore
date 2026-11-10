@@ -20,3 +20,6 @@ android/local.properties
 .env.*
 !*.example
 
+AI_tests/
+AI_Success_Log/
+/.worktrees/
