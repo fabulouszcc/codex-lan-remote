@@ -57,8 +57,12 @@ final class RemoteApi {
     JSONObject call(String method, String path, JSONObject body, String operationId) throws Exception {
         return call(method,path,body,operationId,8000,30000);
     }
+    private HttpsURLConnection connection(String path)throws Exception{
+        URL url=new URL(address+path);java.net.Proxy proxy=EasyTierProxy.forHost(url.getHost());
+        return (HttpsURLConnection)(proxy==java.net.Proxy.NO_PROXY?url.openConnection():url.openConnection(proxy));
+    }
     JSONObject call(String method, String path, JSONObject body, String operationId,int connectTimeout,int readTimeout) throws Exception {
-        HttpsURLConnection connection = (HttpsURLConnection) new URL(address + path).openConnection();
+        HttpsURLConnection connection = connection(path);
         connections.add(connection);
         try {
             connection.setSSLSocketFactory(socketFactory);
@@ -88,7 +92,7 @@ final class RemoteApi {
     }
     byte[] file(String threadId,String id) throws Exception {
         String path="/v1/file?threadId="+java.net.URLEncoder.encode(threadId,"UTF-8")+"&id="+java.net.URLEncoder.encode(id,"UTF-8");
-        HttpsURLConnection connection=(HttpsURLConnection)new URL(address+path).openConnection();connections.add(connection);
+        HttpsURLConnection connection=connection(path);connections.add(connection);
         try{
             connection.setSSLSocketFactory(socketFactory);connection.setHostnameVerifier(verifier);connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(8000);connection.setReadTimeout(60000);connection.setRequestProperty("Authorization","Bearer "+token);
             int status=connection.getResponseCode();

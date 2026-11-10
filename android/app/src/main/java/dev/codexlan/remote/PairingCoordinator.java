@@ -39,8 +39,8 @@ final class PairingCoordinator {
             worker.execute(()->{
                 try {
                     long until=android.os.SystemClock.uptimeMillis()+65000;
-                    while(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口"))&&android.os.SystemClock.uptimeMillis()<until)Thread.sleep(200);
-                    if(!(EasyTierVpnService.running&&EasyTierVpnService.state.startsWith("虚拟接口")))throw new Exception("组网未就绪，请在设置中检查节点和网络参数");
+                    while(!(EasyTierVpnService.ready)&&android.os.SystemClock.uptimeMillis()<until)Thread.sleep(200);
+                    if(!(EasyTierVpnService.ready))throw new Exception("组网未就绪，请在设置中检查节点和网络参数");
                     announce(context,"已建立组网，正在等待电脑连接…");
                     RemoteApi candidate=new RemoteApi(info.address,info.fingerprint,null);
                     JSONObject result=PairingHandshake.run((method,path,body)->candidate.call(method,path,body,null,"GET".equals(method)?2500:8000,"GET".equals(method)?2500:30000),
