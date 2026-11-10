@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { ThreadState, getTurns, summarizeThread, activeTurn } from './thread-state.mjs';
-import { pendingQuestions, validateAnswers } from './user-questions.mjs';
+import { pendingQuestions, pendingAttention, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
@@ -175,6 +175,7 @@ export class DesktopBridge extends EventEmitter {
         revision: entry.store.revision, runtimeStatus: summary.runtimeStatus || 'unavailable',
         turns: [...turns.values()].slice(-50),
         questions: entry.ready ? pendingQuestions(state).map(q => ({ ...q, submitting: entry.consumed.has(JSON.stringify(['question', q.turnId, q.id])) })) : [],
+        attentionRequests: entry.ready ? pendingAttention(state) : [],
         approvals: (liveTurn ? state?.requests || [] : []).flatMap(request => {
           const type = String(request.type || request.method || '');
           const kind = /command/i.test(type) ? 'command' : /file/i.test(type) ? 'file' : null;

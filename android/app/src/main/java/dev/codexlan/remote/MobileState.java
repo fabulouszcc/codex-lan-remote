@@ -122,7 +122,7 @@ final class MobileState {
             if (values == null) continue;
             for (int i = 0; i < values.length(); i++) {
                 JSONObject thread = copyFields(values.getJSONObject(i));
-                if (source == previous) thread.put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray());
+                if (source == previous) thread.put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray()).put("attentionRequests", new JSONArray());
                 String id = thread.getString("id"); JSONObject old = threads.get(id);
                 LinkedHashMap<String, JSONObject> turns = new LinkedHashMap<>();
                 for (JSONObject version : new JSONObject[] { old, thread }) {
@@ -157,7 +157,7 @@ final class MobileState {
     static JSONObject offline(JSONObject value) throws Exception {
         JSONObject result = new JSONObject(value.toString()); result.put("online", false);
         JSONArray threads = result.optJSONArray("threads");
-        if (threads != null) for (int i = 0; i < threads.length(); i++) threads.getJSONObject(i).put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray());
+        if (threads != null) for (int i = 0; i < threads.length(); i++) threads.getJSONObject(i).put("ready", false).put("approvals", new JSONArray()).put("questions", new JSONArray()).put("attentionRequests", new JSONArray());
         return result;
     }
     static JSONArray alerts(JSONObject previous, JSONObject current) throws Exception {
@@ -175,6 +175,13 @@ final class MobileState {
         for (int i = 0; i < threads.length(); i++) {
             JSONObject thread = threads.getJSONObject(i); String threadId = thread.getString("id");
             if (!thread.optBoolean("ready")) continue;
+            JSONArray questions=thread.optJSONArray("questions");
+            if(questions!=null)for(int j=0;j<questions.length();j++){
+                JSONObject question=questions.getJSONObject(j);JSONArray fields=question.optJSONArray("questions");
+                if(!question.optBoolean("submitting")&&fields!=null&&fields.length()>0)result.put(new JSONObject().put("kind","question").put("threadId",threadId).put("request",question));
+            }
+            JSONArray attention=thread.optJSONArray("attentionRequests");
+            if(attention!=null)for(int j=0;j<attention.length();j++)result.put(new JSONObject().put("kind","attention").put("threadId",threadId).put("request",attention.getJSONObject(j)));
             JSONArray turns = thread.optJSONArray("turns");
             if (turns != null) for (int j = 0; j < turns.length(); j++) {
                 JSONObject turn = turns.getJSONObject(j); String id = turn.getString("id"), status = turn.optString("status");

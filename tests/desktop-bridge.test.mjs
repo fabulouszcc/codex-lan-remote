@@ -166,3 +166,13 @@ test('current turn comes from the live owner, never an unfinished history snapsh
   client.emit('disconnected');
   assert.equal(bridge.snapshot()[0].activeTurnId, '');
 });
+
+test('permission and tool elicitation requests are visible as read-only attention without exposing raw payloads',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  const requests=[{id:31,method:'item/permissions/requestApproval',params:{turnId:'turn',reason:'Allow browser?',permissions:{credentials:'PRIVATE'}}},{id:32,method:'mcpServer/elicitation/request',params:{turnId:'turn',message:'Confirm tool setup',url:'https://example.invalid/?token=PRIVATE'}},{id:33,method:'item/tool/requestOptionPicker',params:{turnId:'turn'}},{id:34,method:'item/permissions/requestApproval',params:{turnId:'old'}}];
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:{turns:[{turnId:'turn',status:'inProgress',items:[]}],requests}}});
+  const row=bridge.snapshot()[0];assert.deepEqual(row.attentionRequests?.map(r=>r.id),[31,32,33]);assert.equal(row.approvals.length,0);assert.ok(!JSON.stringify(row.attentionRequests).includes('PRIVATE'));
+  await assert.rejects(bridge.command('active',{op:'approve',turnId:'turn',requestId:31,decision:'accept'}));
+  requests[0].completed=true;client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:{turns:[{turnId:'turn',status:'inProgress',items:[]}],requests}}});assert.deepEqual(bridge.snapshot()[0].attentionRequests.map(r=>r.id),[32,33]);
+  client.emit('disconnected');assert.deepEqual(bridge.snapshot()[0].attentionRequests,[]);
+});

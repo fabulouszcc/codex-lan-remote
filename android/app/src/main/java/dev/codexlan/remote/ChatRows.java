@@ -92,6 +92,8 @@ final class ChatRows {
         JSONArray approvals=thread.optJSONArray("approvals");
         JSONArray questions=thread.optJSONArray("questions");
         if(thread.optBoolean("ready")&&!MobileState.activeTurnId(thread).isEmpty()&&questions!=null)for(int i=0;i<questions.length();i++)rows.add(new Row(chat+":question:"+questions.getJSONObject(i).optString("id"),"question",questions.getJSONObject(i)));
+        JSONArray attention=thread.optJSONArray("attentionRequests");
+        if(thread.optBoolean("ready")&&attention!=null)for(int i=0;i<attention.length();i++)rows.add(new Row(chat+":attention:"+attention.getJSONObject(i).optString("id"),"attention",attention.getJSONObject(i)));
         if(approvals!=null)for(int i=0;i<approvals.length();i++)rows.add(new Row(chat+":approval:"+approvals.getJSONObject(i).optString("id",String.valueOf(i)),"approval",approvals.getJSONObject(i)));
         return rows;
     }

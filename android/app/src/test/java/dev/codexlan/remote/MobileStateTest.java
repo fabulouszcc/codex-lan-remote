@@ -545,4 +545,25 @@ public class MobileStateTest {
         after.getJSONArray("threads").getJSONObject(0).getJSONArray("turns").getJSONObject(0).put("startedAtMs", 500);
         assertEquals(0, MobileState.alerts(before, after).length());
     }
+    @Test public void pendingQuestionsNotifyForNativeAndAsyncRequests()throws Exception{
+        JSONObject current=state("inProgress","",true);JSONArray requests=new JSONArray();
+        requests.put(new JSONObject().put("id",7).put("kind","native").put("turnId","turn").put("questions",new JSONArray().put(new JSONObject().put("id","q").put("title","Choose?"))));
+        requests.put(new JSONObject().put("id","message").put("kind","async").put("turnId","turn").put("questions",new JSONArray().put(new JSONObject().put("id","q2").put("title","Continue?"))));
+        current.getJSONArray("threads").getJSONObject(0).put("questions",requests);
+        JSONArray alerts=MobileState.alerts(null,current);assertEquals(2,alerts.length());assertEquals("question",alerts.getJSONObject(0).getString("kind"));assertEquals(7,alerts.getJSONObject(0).getJSONObject("request").getInt("id"));assertEquals("async",alerts.getJSONObject(1).getJSONObject("request").getString("kind"));
+    }
+    @Test public void questionsDoNotNotifyOfflineWhileSubmittingOrAfterResolution()throws Exception{
+        JSONObject current=state("inProgress","",true);JSONObject request=new JSONObject().put("id",7).put("questions",new JSONArray().put(new JSONObject().put("title","Choose?")));
+        current.getJSONArray("threads").getJSONObject(0).put("questions",new JSONArray().put(request));
+        assertEquals(1,MobileState.alerts(null,current).length());assertEquals(0,MobileState.alerts(null,MobileState.offline(current)).length());
+        request.put("submitting",true);assertEquals(0,MobileState.alerts(null,current).length());request.put("submitting",false).put("questions",new JSONArray());assertEquals(0,MobileState.alerts(null,current).length());
+        current.getJSONArray("threads").getJSONObject(0).put("questions",new JSONArray());assertEquals(0,MobileState.alerts(null,current).length());
+    }
+    @Test public void computerOnlyPermissionAttentionIsVisibleAndClearedOffline()throws Exception{
+        JSONObject current=state("inProgress","",true);JSONObject thread=current.getJSONArray("threads").getJSONObject(0);
+        thread.put("attentionRequests",new JSONArray().put(new JSONObject().put("id",31).put("kind","item/permissions/requestApproval").put("title","Codex 需要电脑权限授权")));
+        assertEquals("attention",MobileState.alerts(null,current).getJSONObject(0).getString("kind"));
+        boolean visible=false;for(ChatRows.Row row:ChatRows.build(thread))if("attention".equals(row.type))visible=true;assertTrue(visible);
+        JSONObject offline=MobileState.offline(current);assertEquals(0,MobileState.alerts(null,offline).length());assertEquals(0,offline.getJSONArray("threads").getJSONObject(0).getJSONArray("attentionRequests").length());assertEquals(1,thread.getJSONArray("attentionRequests").length());
+    }
 }
