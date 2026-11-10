@@ -12,6 +12,7 @@ import { createGateway } from '../server/gateway.mjs';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { gunzipSync } from 'node:zlib';
 import { fileReference } from '../server/chat-files.mjs';
+import { Uploads } from '../server/uploads.mjs';
 
 
 
@@ -56,6 +57,23 @@ test('desktop style new chat does not require a title',async t=>{
   const token=await f.pair();const response=await f.request('POST','/v1/threads/new',{baseThreadId:'allowed-chat'},{authorization:'Bearer '+token,'idempotency-key':'untitled-chat-request-001'});
   assert.equal(response.status,200);assert.equal(received.name,undefined);assert.equal(response.data.name,'新聊天');
 });
+
+test('binary uploads require live write authorization and commands cannot forge computer paths',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'lan-upload-http-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const uploads=new Uploads(root),f=await fixture(t,{uploads});
+  const path='/v1/upload?threadId=allowed-chat&name=test.md',bytes=Buffer.from('upload evidence');
+  assert.equal((await f.request('POST',path,bytes,{'content-type':'application/octet-stream'})).status,401);
+  const token=await f.pair(),headers={authorization:'Bearer '+token,'content-type':'application/octet-stream'};
+  assert.equal((await f.request('POST',path,bytes,headers)).status,403);
+  f.bridge.snapshot=()=>[{id:'allowed-chat',ready:true,writable:true,turns:[]}];
+  const uploaded=await f.request('POST',path,bytes,headers);assert.equal(uploaded.status,200);
+  assert.equal((await f.request('POST',path+'&unused=1',bytes,{...headers,origin:'https://attacker.example'})).status,403);
+  let received;f.bridge.command=async(id,command)=>{received=command;return {accepted:true};};
+  const submit=(value,key)=>f.request('POST','/v1/command',{threadId:'allowed-chat',op:'start',text:'',...value},{authorization:'Bearer '+token,'idempotency-key':key});
+  assert.equal((await submit({attachmentIds:[uploaded.data.id]},'upload-command-0001')).status,200);assert.equal(await readFile(received.attachments[0].path,'utf8'),'upload evidence');
+  assert.equal((await submit({text:'test',attachments:[{path:'C:\\private\\secret.txt'}]},'upload-command-0002')).status,200);assert.deepEqual(received.attachments,[]);
+  const other=await f.pair();assert.equal((await f.request('POST','/v1/command',{threadId:'allowed-chat',op:'start',text:'',attachmentIds:[uploaded.data.id]},{authorization:'Bearer '+other,'idempotency-key':'upload-command-0003'})).status,403);
+});
 test('installed desktop version is advertised separately from sync revision',async t=>{
   const f=await fixture(t,{desktopVersion:'0.5.0'});const info=await f.request('GET','/v1/info');assert.equal(info.data.desktopVersion,'0.5.0');const token=await f.pair();const state=await f.request('GET','/v1/state',undefined,{authorization:'Bearer '+token});assert.equal(state.data.desktopVersion,'0.5.0');assert.equal(typeof state.data.version,'number');
 });
@@ -78,7 +96,7 @@ async function fixture(t, options = {}) {
   gateway.server.listen(0, '127.0.0.1'); await once(gateway.server, 'listening');
   t.after(async () => { gateway.server.closeAllConnections(); await new Promise(resolve => gateway.server.close(resolve)); });
   const request = (method, path, value, headers = {}, trust = true) => new Promise((resolve, reject) => {
-    const payload = value === undefined ? null : Buffer.from(JSON.stringify(value));
+    const payload = value === undefined ? null : Buffer.isBuffer(value)?value:Buffer.from(JSON.stringify(value));
     const req = https.request({ hostname: '127.0.0.1', port: gateway.server.address().port, path, method,
       ca: trust ? certificate.toString() : undefined,
       headers: { ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...headers } }, response => {

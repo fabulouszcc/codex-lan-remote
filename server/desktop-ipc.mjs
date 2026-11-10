@@ -4,6 +4,7 @@
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { messageInput } from './message-input.mjs';
 
 export const DEFAULT_PIPE = '\\\\.\\pipe\\codex-ipc';
 export const PROTOCOL_VERSIONS = Object.freeze({
@@ -247,20 +248,19 @@ export class DesktopIpcClient extends EventEmitter {
     return response.result;
   }
 
-  startTurn(threadId, text, { ownerId, request = {}, context = {} } = {}) {
-    if (typeof text !== 'string' || !text.trim()) throw new Error('A non-empty test message is required');
+  startTurn(threadId, text, { ownerId, request = {}, context = {}, attachments=[],cwd } = {}) {
+    if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
+    const message=messageInput(text,{attachments,cwd});
     return this.#control(threadId, 'thread-follower-start-turn', {
-      turnStart: { request: { ...request, threadId, clientUserMessageId: randomUUID(), input: [{ type: 'text', text, text_elements: [] }] }, context },
+      turnStart: { request: { ...request, threadId, clientUserMessageId: message.id, input: message.input }, context: {...context,messageThreadId:message.context.messageThreadId,restoreMessage:message.restoreMessage,attachments:message.attachments,localTurnMetadata:message.localTurnMetadata} },
     }, ownerId);
   }
 
-  steerTurn(threadId, text, { ownerId, cwd } = {}) {
-    if (typeof text !== 'string' || !text.trim()) throw new Error('A non-empty steering message is required');
-    const id = randomUUID();
+  steerTurn(threadId, text, { ownerId, cwd,attachments=[] } = {}) {
+    if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
+    const message=messageInput(text,{attachments,cwd});
     return this.#control(threadId, 'thread-follower-steer-turn', {
-      input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: id,
-      restoreMessage: { id, text, cwd, createdAt: Date.now(),
-        context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], commentAttachments: [] } },
+      input: message.input, clientUserMessageId: message.id,attachments:message.attachments,restoreMessage:message.restoreMessage,
     }, ownerId);
   }
 

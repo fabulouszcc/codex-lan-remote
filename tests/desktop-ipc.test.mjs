@@ -144,6 +144,16 @@ test('model changes use the installed settings protocol and forward only model a
   const sent=messages.find(message=>message.method==='thread-follower-update-thread-settings');
   assert.equal(sent.version,2);assert.deepEqual(sent.params.threadSettings,{model:'available-model',effort:'high'});assert.equal(sent.targetClientId,'desktop-owner');
 });
+
+test('start and steer forward native attachment metadata alongside localImage input',async t=>{
+  const {client,messages}=await fixture(t,(request,send)=>{if(['thread-follower-start-turn','thread-follower-steer-turn'].includes(request.method))respond(request,send,{});},{controlThreadIds:['allowed-thread']});
+  const attachments=[{id:'image',kind:'image',name:'image.png',path:'C:\\attachments\\image.png'},{id:'file',kind:'text',name:'notes.md',path:'C:\\attachments\\notes.md'}];
+  await client.startTurn('allowed-thread','',{ownerId:'desktop-owner',attachments,cwd:'C:\\project'});
+  await client.steerTurn('allowed-thread','read',{ownerId:'desktop-owner',attachments,cwd:'C:\\project'});
+  const start=messages.find(row=>row.method==='thread-follower-start-turn').params.turnStart;
+  assert.equal(start.context.attachments.length,2);assert.equal(start.context.localTurnMetadata.fileAttachmentCount,1);assert.equal(start.request.input[1].type,'localImage');
+  const steer=messages.find(row=>row.method==='thread-follower-steer-turn').params;assert.equal(steer.attachments.length,2);assert.equal(steer.restoreMessage.context.fileAttachments[0].fsPath,attachments[1].path);
+});
 test('speed selection forwards only the supported service tier and rejects arbitrary settings',async t=>{
   const {client,messages}=await fixture(t,(request,send)=>{if(request.method==='thread-follower-update-thread-settings')respond(request,send,{applied:true});},{controlThreadIds:['allowed-thread']});
   await client.updateModelSettings('allowed-thread','available-model','ultra',{ownerId:'desktop-owner',serviceTier:'priority',permissions:'unsafe'});

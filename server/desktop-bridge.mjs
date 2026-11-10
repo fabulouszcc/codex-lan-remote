@@ -3,6 +3,7 @@ import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { ThreadState, getTurns, summarizeThread, activeTurn } from './thread-state.mjs';
 import { pendingQuestions, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
+import { messageInput } from './message-input.mjs';
 
 export class DesktopBridge extends EventEmitter {
   constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
@@ -222,7 +223,7 @@ export class DesktopBridge extends EventEmitter {
       const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
       if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
       const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
-        context:{prompt:command.text,addedFiles:[],fileAttachments:[],imageAttachments:[],commentAttachments:[],ideContext:null,messageThreadId:randomUUID()},
+        context:messageInput(command.text,{attachments:command.attachments,cwd:state.cwd,id}).context,
         submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
       await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
@@ -230,10 +231,10 @@ export class DesktopBridge extends EventEmitter {
       await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
-      await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
+      await this.client.startTurn(threadId, command.text, { ownerId: entry.owner,cwd:state.cwd,attachments:command.attachments });
     } else if (command.op === 'steer') {
       if (!active) throw new Error('没有正在执行的任务');
-      await this.client.steerTurn(threadId, command.text, { ownerId: entry.owner, cwd: state.cwd });
+      await this.client.steerTurn(threadId, command.text, { ownerId: entry.owner, cwd: state.cwd,attachments:command.attachments });
     } else if (command.op === 'interrupt') {
       if (!active || command.turnId !== active.turnId) throw new Error('任务已变化，请刷新后重试');
       await this.client.interruptTurn(threadId, active.turnId, entry.owner);

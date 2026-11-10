@@ -6,6 +6,8 @@ import { mkdir, readFile, appendFile } from 'node:fs/promises';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
 import { ChatCreator } from '../server/chat-creator.mjs';
+import { Uploads } from '../server/uploads.mjs';
+import { homedir } from 'node:os';
 import { createGateway } from '../server/gateway.mjs';
 import { atomicJson, readJson, addresses } from './config.mjs';
 import { desktopVersion } from './version.mjs';
@@ -47,7 +49,9 @@ export class GatewayRuntime {
     const historyReader = config.codexBinary ? new HistoryReader(config.codexBinary) : undefined;
     const bridge = new DesktopBridge(config.threads, { historyReader,backgroundHistoryReader:config.codexBinary?new HistoryReader(config.codexBinary):undefined, allowSelectedChats: config.allowSelectedChats,chatCreator:config.codexBinary?new ChatCreator(config.codexBinary):undefined });
     const connectionAddresses={ primary:`https://${config.host}:${config.port}`, ...(config.lanHost ? {lan:`https://${config.lanHost}:${config.port}`} : {}) };
-    const gateway = createGateway({ tls: this.tls, bridge, desktopVersion, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
+    const uploadIndex=join(this.root,'uploads.local.json');
+    const uploads=new Uploads(join(process.env.CODEX_HOME||join(homedir(),'.codex'),'attachments'),{entries:await readJson(uploadIndex,{}),save:entries=>atomicJson(uploadIndex,entries)});
+    const gateway = createGateway({ tls: this.tls, bridge, uploads, desktopVersion, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
     const servers=[gateway.server];
     gateway.server.on('controlAction', event => { void appendFile(join(this.root, 'actions.local.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 }).catch(() => {}); });
     try {

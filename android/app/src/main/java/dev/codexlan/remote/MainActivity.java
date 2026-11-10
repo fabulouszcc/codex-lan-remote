@@ -88,6 +88,21 @@ public final class MainActivity extends Activity {
     private final java.util.Map<String,String> secretQuestionDrafts=new java.util.HashMap<>();
     private final java.util.Set<String> expandedTools = new java.util.HashSet<>();
     private final java.util.Map<String, String> drafts = new java.util.HashMap<>();
+    private final PhoneAttachments phoneAttachments=new PhoneAttachments();
+    private LinearLayout attachmentTray;
+    private android.widget.ScrollView attachmentScroll;
+    private Button attachFile;
+    private String attachmentKey(){return api==null?"":api.fingerprint+":"+selectedThreadId;}
+    private void renderAttachments(){
+        if(attachmentTray==null)return;attachmentTray.removeAllViews();
+        for(PhoneAttachments.Item item:phoneAttachments.snapshot(attachmentKey())){
+            LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            TextView label=text(item.name,13,foreground);label.setSingleLine(true);label.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);row.addView(label,new LinearLayout.LayoutParams(0,dp(48),1));
+            Button remove=icon("close","移除附件 "+item.name,false);remove.setEnabled(!isSending());remove.setOnClickListener(v->{phoneAttachments.remove(attachmentKey(),item);renderAttachments();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));});row.addView(remove,new LinearLayout.LayoutParams(dp(48),dp(48)));attachmentTray.addView(row);
+        }
+        attachmentTray.setVisibility(attachmentTray.getChildCount()==0?View.GONE:View.VISIBLE);
+        if(attachmentScroll!=null){attachmentScroll.setVisibility(attachmentTray.getChildCount()==0?View.GONE:View.VISIBLE);attachmentScroll.setLayoutParams(new LinearLayout.LayoutParams(-1,dp(Math.min(3,attachmentTray.getChildCount())*48)));}
+    }
     private final SentMessages sentMessages=new SentMessages();
     private JSONObject currentThread;
     private TranscriptListView scroll;
@@ -157,7 +172,7 @@ public final class MainActivity extends Activity {
     private TextView queueChip;
     private TextView sendModeChoice;
     private String sendMode(){return getPreferences(MODE_PRIVATE).getString("sendMode:"+(api==null?"":api.fingerprint),"queue");}
-    private String composerAction(){return MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString(),sendMode());}
+    private String composerAction(){return MobileState.composerAction(currentState,currentThread,isSending(),composer.getText().toString()+(phoneAttachments.has(attachmentKey())?" attachment":""),sendMode());}
     private void chooseSendMode(){
         LinearLayout choices=vertical();choices.setPadding(dp(8),dp(8),dp(8),dp(8));choices.setBackground(rounded(surface(43,43,43),18));final PopupWindow[] menu={null};
         String[] modes={"queue","steer"},titles={"排队发送","立即插话"},details={"当前任务完成后，按顺序执行","将消息立即补充到正在执行的任务"};
@@ -193,6 +208,7 @@ public final class MainActivity extends Activity {
         }
         if (api == null || state!=null&&state.getBoolean("connectionGuideVisible",false)&&!state.getBoolean("pairingInProgress",false)) connectionPage(); else chatPage();
         if(state==null){showLaunchAnimation();appUpdates.launch();}
+        if(state!=null){phoneAttachments.restore(state.getString("attachmentDrafts","{}"));phoneAttachments.picking=state.getString("attachmentPicking","");renderAttachments();}
     }
     private int dp(int value) { return (int) (getResources().getDisplayMetrics().density * value + .5f); }
     private LinearLayout vertical() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); return layout; }
@@ -408,7 +424,9 @@ public final class MainActivity extends Activity {
         queueChip=text("",12,accent);queueChip.setPadding(dp(12),dp(8),dp(12),dp(4));queueChip.setTextIsSelectable(false);queueChip.setVisibility(View.GONE);queueChip.setOnClickListener(v->queueDialog());dock.addView(queueChip);
         composer = field("发送消息"); composer.setBackgroundColor(Color.TRANSPARENT); composer.setSingleLine(false); composer.setMaxLines(6); composer.setMinLines(1); composer.setPadding(dp(12),dp(12),dp(8),dp(12)); composer.setText(drafts.containsKey(selectedThreadId) ? drafts.get(selectedThreadId) : "");
         dock.addView(composer,new LinearLayout.LayoutParams(-1,-2));
+        attachmentTray=vertical();attachmentScroll=new android.widget.ScrollView(this);attachmentScroll.addView(attachmentTray);dock.addView(attachmentScroll);renderAttachments();
         LinearLayout controls=new LinearLayout(this);controls.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        attachFile=icon("file","添加文件或图片",false);attachFile.setOnClickListener(v->{if(api==null||currentThread==null||isSending())return;phoneAttachments.pick(this,attachmentKey());});controls.addView(attachFile,new LinearLayout.LayoutParams(dp(48),dp(48)));
         modelChoice=powerText("选择模型  ⌄",12,muted);modelChoice.setTextIsSelectable(false);modelChoice.setSingleLine(true);modelChoice.setEllipsize(android.text.TextUtils.TruncateAt.END);modelChoice.setPadding(dp(10),dp(10),dp(4),dp(10));modelChoice.setContentDescription("选择模型与思考强度");modelChoice.setOnClickListener(v->modelDialog());controls.addView(modelChoice,new LinearLayout.LayoutParams(0,dp(48),1));
         sendModeChoice=text("排队  ⌄",12,foreground);sendModeChoice.setTextIsSelectable(false);sendModeChoice.setGravity(android.view.Gravity.CENTER);sendModeChoice.setPadding(dp(8),0,dp(8),0);sendModeChoice.setOnClickListener(v->chooseSendMode());controls.addView(sendModeChoice,new LinearLayout.LayoutParams(dp(76),dp(48)));
         send = icon("send","发送消息",true); controls.addView(send,new LinearLayout.LayoutParams(dp(44),dp(44))); dock.addView(controls);root.addView(dock);
@@ -436,7 +454,7 @@ public final class MainActivity extends Activity {
         String blocked = MobileState.unavailableReason(currentState, currentThread, isSending());
         if (!blocked.isEmpty()) { toast(blocked); return; }
         String value = composer.getText().toString();
-        if (value.trim().isEmpty()) { toast("请先输入消息"); return; }
+        if (value.trim().isEmpty()&&!phoneAttachments.has(attachmentKey())) { toast("请输入消息或选择附件"); return; }
         try { command(new JSONObject().put("op", operation).put("text", value), true); } catch (Exception e) { toast(error(e)); }
     }
     private void command(JSONObject payload, boolean clearComposer){command(payload,clearComposer,null);}
@@ -446,12 +464,21 @@ public final class MainActivity extends Activity {
         try { if (!payload.has("threadId")) payload.put("threadId", currentThread.getString("id")); } catch (Exception e) { return; }
         RemoteApi client = api; int epoch = generation; String textBefore = composer.getText().toString();
         String id=UUID.randomUUID().toString(),chat=payload.optString("threadId");
+        String filesKey=client.fingerprint+":"+chat;
+        java.util.List<PhoneAttachments.Item> files=clearComposer?phoneAttachments.snapshot(filesKey):java.util.Collections.emptyList();
         final java.util.Set<String> before;try{before=new java.util.HashSet<>(SentMessages.users(currentThread).keySet());}catch(Exception e){return;}
         if(!commands.begin(chat,id))return;setButtons(false);RemoteApi channel=client.readChannel();commandChannels.put(id,channel);
         worker.execute(() -> {
             try {
+                if(!files.isEmpty()){
+                    JSONArray ids=new JSONArray();
+                    for(PhoneAttachments.Item file:files){try(java.io.InputStream input=getContentResolver().openInputStream(file.uri)){if(input==null)throw new Exception("文件已无法读取，请重新选择");ids.put(channel.upload(chat,file.name,file.size,input).getString("id"));}}
+                    payload.put("attachmentIds",ids);
+                    if(epoch!=generation||client!=api||Thread.currentThread().isInterrupted())throw new Exception("连接已切换，附件保留在草稿中，请确认后再发送");
+                }
                 channel.call("POST", "/v1/command", payload, id);
                 runOnUiThread(() -> { if (epoch == generation && client == api) {
+                    phoneAttachments.accepted(filesKey,files);renderAttachments();
                     if(clearComposer&&("start".equals(payload.optString("op"))||"steer".equals(payload.optString("op")))){sentMessages.accepted(chat,id,payload.optString("text"),before);if(chat.equals(selectedThreadId)){renderRevision++;scheduleRows();}}
                     if (clearComposer && payload.optString("threadId").equals(selectedThreadId) && composer.getText().toString().equals(textBefore)) { composer.setText(""); drafts.remove(selectedThreadId); }
                     if("model".equals(payload.optString("op"))){JSONObject cached=modelCache.get(modelCacheKey(client,payload.optString("threadId")));if(cached!=null)try{cached.put("current",new JSONObject().put("model",payload.optString("model")).put("effort",payload.optString("effort")).put("serviceTier",payload.optString("serviceTier",cached.optJSONObject("current")==null?"default":cached.optJSONObject("current").optString("serviceTier","default"))));}catch(Exception ignored){}}
@@ -468,7 +495,8 @@ public final class MainActivity extends Activity {
         ready = ready && reason.isEmpty();
         String action=composerAction();
         if(sendModeChoice!=null){sendModeChoice.setText("steer".equals(sendMode())?"插话  ⌄":"排队  ⌄");sendModeChoice.setContentDescription("发送模式："+("steer".equals(sendMode())?"立即插话":"排队发送")+"，点击切换");}
-        boolean dictating=speechInput!=null&&speechInput.running(),empty=composer.getText().toString().trim().isEmpty(),stop="interrupt".equals(action)&&!dictating,voice=empty&&!stop&&!isSending();send.setEnabled(ready&&!"none".equals(action)||empty&&!isSending());send.setAlpha(send.isEnabled()?1f:.35f);
+        boolean dictating=speechInput!=null&&speechInput.running(),empty=composer.getText().toString().trim().isEmpty()&&!phoneAttachments.has(attachmentKey()),stop="interrupt".equals(action)&&!dictating,voice=empty&&!stop&&!isSending();send.setEnabled(ready&&!"none".equals(action)||empty&&!isSending());send.setAlpha(send.isEnabled()?1f:.35f);
+        if(attachFile!=null){attachFile.setEnabled(ready);attachFile.setAlpha(ready?1f:.35f);}renderAttachments();
         send.setBackground(rounded(stop?foreground:(palette.dark?0xff3478f6:0xff2867d7),22));
         UiIcon image=new UiIcon(stop?"stop":voice?"voice":"send",stop?background:Color.WHITE);image.setBounds(0,0,dp(20),dp(20));send.setCompoundDrawables(image,null,null,null);
         send.setContentDescription(dictating&&empty?"正在语音输入，点击结束":isSending()?"正在提交":stop?"停止当前回复，长按语音输入":voice?"语音输入，长按开始":"queue".equals(action)?"排队发送":"steer".equals(action)?"插话发送":"发送消息");
@@ -919,6 +947,9 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
         super.onActivityResult(request, result, data);
+        if(request==PhoneAttachments.REQUEST){
+            if(result==RESULT_OK&&data!=null){String key=phoneAttachments.picking;worker.execute(()->{try{java.util.List<PhoneAttachments.Item> files=phoneAttachments.read(this,data);runOnUiThread(()->{if(isDestroyed())return;try{phoneAttachments.add(key,files);renderAttachments();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}catch(Exception e){toast(error(e));}});}catch(Exception e){runOnUiThread(()->toast(error(e)));}});}return;
+        }
         if(chatFiles.saveResult(request,result,data))return;
         if(appUpdates!=null&&appUpdates.activityResult(request))return;
         if(request==204){if(result==RESULT_OK&&data!=null&&pairingInput!=null)pairingInput.accept(data.getStringExtra("pairing"));return;}
@@ -1073,6 +1104,7 @@ public final class MainActivity extends Activity {
         if (api != null) beginPolling();
     }
     @Override protected void onSaveInstanceState(Bundle out) {
+        out.putString("attachmentDrafts",phoneAttachments.save());out.putString("attachmentPicking",phoneAttachments.picking);
         out.putBoolean("connectionGuideVisible",connectionGuideVisible);out.putBoolean("pairingInProgress",PairingCoordinator.busy()||pairingProgressCard!=null&&pairingProgressCard.getVisibility()==View.VISIBLE);
         if(api != null && composer != null)drafts.put(selectedThreadId,composer.getText().toString());
         out.putString("selectedChat",selectedThreadId);out.putStringArrayList("draftIds",new java.util.ArrayList<>(drafts.keySet()));out.putStringArrayList("draftValues",new java.util.ArrayList<>(drafts.values()));super.onSaveInstanceState(out);

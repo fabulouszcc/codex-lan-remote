@@ -97,5 +97,20 @@ final class RemoteApi {
             ByteArrayOutputStream bytes=new ByteArrayOutputStream();try(InputStream input=connection.getInputStream()){byte[] block=new byte[16384];int count;while((count=input.read(block))!=-1){if(bytes.size()+count>32*1024*1024)throw new Exception("文件超过 32 MB");bytes.write(block,0,count);}}return bytes.toByteArray();
         }finally{connections.remove(connection);connection.disconnect();}
     }
+    JSONObject upload(String threadId,String name,long size,InputStream source)throws Exception{
+        if(size>PhoneAttachments.MAX_BYTES)throw new Exception("文件超过 32 MB");
+        String path="/v1/upload?threadId="+java.net.URLEncoder.encode(threadId,"UTF-8")+"&name="+java.net.URLEncoder.encode(name,"UTF-8");
+        HttpsURLConnection connection=(HttpsURLConnection)new URL(address+path).openConnection();connections.add(connection);
+        try{
+            connection.setSSLSocketFactory(socketFactory);connection.setHostnameVerifier(verifier);connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(8000);connection.setReadTimeout(60000);
+            connection.setRequestMethod("POST");connection.setRequestProperty("Authorization","Bearer "+token);connection.setRequestProperty("Content-Type","application/octet-stream");connection.setDoOutput(true);
+            if(size>=0)connection.setFixedLengthStreamingMode(size);else connection.setChunkedStreamingMode(16384);
+            long total=0;try(java.io.OutputStream output=connection.getOutputStream()){byte[] buffer=new byte[16384];int count;while((count=source.read(buffer))!=-1){total+=count;if(total>PhoneAttachments.MAX_BYTES)throw new Exception("文件超过 32 MB");output.write(buffer,0,count);}}
+            int status=connection.getResponseCode();InputStream response=status>=400?connection.getErrorStream():connection.getInputStream();
+            if(response==null)throw new Exception("上传未确认（"+status+"）");
+            ByteArrayOutputStream bytes=new ByteArrayOutputStream();try(response){byte[] block=new byte[1024];int count;while((count=response.read(block))!=-1){if(bytes.size()+count>65536)throw new Exception("上传回执过大");bytes.write(block,0,count);}}
+            JSONObject result=new JSONObject(bytes.toString("UTF-8"));if(status!=200)throw new ApiException(status,result.optString("error","上传失败"));return result;
+        }finally{connections.remove(connection);connection.disconnect();}
+    }
     void cancel() { for (HttpsURLConnection connection : connections) connection.disconnect(); }
 }
