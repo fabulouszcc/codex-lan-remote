@@ -178,8 +178,7 @@ public final class MainActivity extends Activity {
         palette=UiPalette.of(this);setTheme(palette.dark?R.style.AppTheme:R.style.AppThemeLight);
         super.onCreate(state);background=palette.background;foreground=palette.foreground;muted=palette.muted;accent=palette.accent;
         appUpdates=new AppUpdates(this,()->api);
-        getWindow().setStatusBarColor(background);getWindow().setNavigationBarColor(background);
-        getWindow().getDecorView().setSystemUiVisibility(palette.dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        fullWindow(getWindow());
         storage = new SecureSession(this);
         try {
             JSONObject saved = storage.load();
@@ -195,6 +194,14 @@ public final class MainActivity extends Activity {
         if(state==null){showLaunchAnimation();appUpdates.launch();}
     }
     private int dp(int value) { return (int) (getResources().getDisplayMetrics().density * value + .5f); }
+    private void fullWindow(android.view.Window window){
+        window.setStatusBarColor(background);window.setNavigationBarColor(background);
+        window.getDecorView().setSystemUiVisibility(palette.dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        if(android.os.Build.VERSION.SDK_INT>=29){window.setStatusBarContrastEnforced(false);window.setNavigationBarContrastEnforced(false);}
+        if(android.os.Build.VERSION.SDK_INT>=28){android.view.WindowManager.LayoutParams attrs=window.getAttributes();attrs.layoutInDisplayCutoutMode=android.os.Build.VERSION.SDK_INT>=30?android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS:android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;window.setAttributes(attrs);}
+        if(android.os.Build.VERSION.SDK_INT>=30)window.setDecorFitsSystemWindows(false);
+        window.getDecorView().requestApplyInsets();
+    }
     private LinearLayout vertical() { LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); return layout; }
     private TextView text(String value, int size, int color) {
         TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setPadding(0, dp(7), 0, dp(7)); view.setTextIsSelectable(true); return view;
@@ -204,7 +211,7 @@ public final class MainActivity extends Activity {
         root.setFocusableInTouchMode(true);root.requestFocus();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());
+                android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime() | android.view.WindowInsets.Type.displayCutout());
                 view.setPadding(dp(20) + bars.left, dp(10) + bars.top, dp(20) + bars.right, dp(10) + bars.bottom);
             }
             return insets;
@@ -957,12 +964,15 @@ public final class MainActivity extends Activity {
             },id->{drawer.dismiss();createProjectChat(id);});panel.addView(folders,new LinearLayout.LayoutParams(-1,0,1));
             search.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){folders.query(s.toString());}public void afterTextChanged(android.text.Editable e){}});
             settingRow(panel,"设置","电脑连接、EasyTier 与通知",()->{drawer.dismiss();settingsPage();});
-            drawer.show(); drawer.getWindow().setBackgroundDrawableResource(android.R.color.transparent); drawer.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels-dp(28),dp(400)),-1); drawer.getWindow().setGravity(android.view.Gravity.START);
+            drawer.show();android.view.Window window=drawer.getWindow();window.setBackgroundDrawableResource(android.R.color.transparent);
+            int width=android.os.Build.VERSION.SDK_INT>=30?getWindowManager().getCurrentWindowMetrics().getBounds().width():getResources().getDisplayMetrics().widthPixels;boolean compact=width/getResources().getDisplayMetrics().density<600;
+            window.setLayout(compact?-1:Math.min(width-dp(28),dp(400)),-1);window.setGravity(android.view.Gravity.START);
+            if(compact){window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);fullWindow(window);}
         } catch (Exception error) { toast("聊天列表读取失败"); }
     }
     private LinearLayout panel(android.app.Dialog dialog,String title) {
         LinearLayout page=vertical();page.setPadding(dp(16),dp(16),dp(16),dp(12));page.setBackgroundColor(background); page.setFitsSystemWindows(true);
-        page.setOnApplyWindowInsetsListener((v,insets)->{if(android.os.Build.VERSION.SDK_INT>=30){android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime());v.setPadding(dp(16)+bars.left,dp(8)+bars.top,dp(16)+bars.right,dp(12)+bars.bottom);}return insets;});
+        page.setOnApplyWindowInsetsListener((v,insets)->{if(android.os.Build.VERSION.SDK_INT>=30){android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.ime() | android.view.WindowInsets.Type.displayCutout());v.setPadding(dp(16)+bars.left,dp(8)+bars.top,dp(16)+bars.right,dp(12)+bars.bottom);}return insets;});
         page.addView(toolbar(title,dialog::dismiss));dialog.setContentView(page);dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);return page;
     }
     private boolean creatingChat;
