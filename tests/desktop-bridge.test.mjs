@@ -34,9 +34,9 @@ test('slash skills resolve only installed names and compact stays owner-bound, w
 
 test('queued phone files persist native attachment context without duplicating file bytes',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let queue=[];
-  bridge.historyReader.queuedMessages=async()=>queue;client.setQueuedFollowUps=async(id,messages)=>{queue=messages;};await bridge.connect();
-  await bridge.command('active',{op:'queue',text:'read later',attachments:[{id:'file',name:'proof.txt',kind:'text',path:'C:\\attachments\\proof.txt'},{id:'image',name:'proof.png',kind:'image',path:'C:\\attachments\\proof.png'}]});
-  assert.equal(queue[0].context.fileAttachments[0].fsPath,'C:\\attachments\\proof.txt');assert.equal(queue[0].context.imageAttachments[0].localPath,'C:\\attachments\\proof.png');assert.equal(queue[0].prompt,'read later');assert.ok(JSON.stringify(queue).length<2048);
+  bridge.historyReader.queuedMessages=async()=>queue;client.setQueuedFollowUps=async(id,messages)=>{queue=messages;client.emit('queuedMessages',{conversationId:id,messages});};await bridge.connect();
+  await bridge.command('active',{op:'queue',text:'',attachments:[{id:'file',name:'proof.txt',kind:'text',path:'C:\\attachments\\proof.txt'},{id:'image',name:'proof.png',kind:'image',path:'C:\\attachments\\proof.png'}]});
+  assert.equal(queue[0].context.fileAttachments[0].fsPath,'C:\\attachments\\proof.txt');assert.equal(queue[0].context.imageAttachments[0].localPath,'C:\\attachments\\proof.png');assert.equal(queue[0].prompt,'');assert.ok(JSON.stringify(queue).length<2048);assert.match(bridge.snapshot()[0].queuedMessages[0].text,/proof.txt.*proof.png/);
 });
 
 test('an old inProgress flag cannot keep a finished chat busy or expose stale approvals and questions',async t=>{
