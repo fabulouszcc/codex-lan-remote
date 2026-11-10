@@ -821,7 +821,7 @@ public final class MainActivity extends Activity {
             LinearLayout statusCard = easyTierCard(form, "连接状态");
             TextView networkStatus = text(EasyTierVpnService.state, 16, accent); statusCard.addView(networkStatus);
             statusCard.addView(text("兼容模式只连接本 App，不占用系统 VPN；关闭后使用 Android 虚拟网卡。", 13, muted));
-            android.widget.Switch compatible=new android.widget.Switch(this);compatible.setText("兼容其他 VPN（不创建虚拟网卡）");compatible.setTextColor(foreground);compatible.setChecked(EasyTierVpnService.usesProxy(this));statusCard.addView(compatible);
+            android.widget.Switch compatible=new android.widget.Switch(this);compatible.setText("兼容其他 VPN");compatible.setMinHeight(dp(48));compatible.setTextColor(foreground);compatible.setChecked(EasyTierVpnService.usesProxy(this));statusCard.addView(compatible);
             LinearLayout identityCard = easyTierCard(form, "网络身份");
             identityCard.addView(text("与电脑填写相同的网络名称和密钥。密钥加密保存在本机。", 12, muted));
             EditText name = field("网络名称"), secret = field("网络密钥"), cidr = field("手机虚拟 IPv4/前缀"), peers = field("节点地址，每行一个，例如 tcp://节点IP:11010");
