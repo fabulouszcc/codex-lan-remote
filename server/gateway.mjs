@@ -32,7 +32,7 @@ function reply(response, status, value) {
 }
 
 // No generic RPC proxy. Only explicitly configured chats and supported operations.
-export function createGateway({ tls, bridge, desktopVersion = '', deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
+export function createGateway({ tls, bridge, uploads, desktopVersion = '', deviceName = 'Codex 电脑', deviceId, connectionAddresses = {}, devices = [], saveDevices = async () => {}, pairingCode = randomBytes(16).toString('hex'), pairingTtlMs = 600000, now = Date.now }) {
   const sessions = new Map(devices.map(device => [device.tokenHash, device]));
   const syncWindows = new Map();
   const selections=new Map();
@@ -94,6 +94,15 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
       const sessionHash = token && hash(token);
       if (!sessionHash || !sessions.has(sessionHash)) throw fail(401, '请先配对');
       sessions.get(sessionHash).lastSeen = now();
+      if(request.method==='POST'&&url.pathname==='/v1/upload'){
+        if(!uploads)throw fail(501,'请更新电脑插件以发送附件');
+        const threadId=url.searchParams.get('threadId');
+        const allowed=()=>sessions.has(sessionHash)&&bridge.snapshot().some(row=>row.id===threadId&&row.writable&&row.ready);
+        if(!allowed())throw fail(403,'聊天未授权写入或尚未就绪');
+        if(request.headers['content-type']!=='application/octet-stream')throw fail(415,'需要二进制文件');
+        if(Number(request.headers['content-length'])>32*1024*1024)throw fail(413,'文件超过 32 MB');
+        reply(response,200,await uploads.receive(request,{name:url.searchParams.get('name'),threadId,sessionHash,authorized:allowed}));return;
+      }
       if (request.method === 'GET' && url.pathname === '/v1/file') {
         const thread=bridge.snapshot().find(thread=>thread.id===url.searchParams.get('threadId'));
         if(!thread)throw fail(403,'聊天不在授权范围内');
@@ -137,6 +146,11 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
         if(!bridge.snapshot().some(thread=>thread.id===threadId))throw fail(403,'聊天不在授权范围内');
         try{reply(response,200,await bridge.modelOptions(threadId));}catch(error){throw fail(400,error.message);}return;
       }
+      if(request.method==='GET'&&url.pathname==='/v1/skills'){
+        const threadId=url.searchParams.get('threadId');
+        if(!bridge.snapshot().some(row=>row.id===threadId))throw fail(403,'聊天不在授权范围内');
+        try{reply(response,200,await bridge.skills(threadId));}catch(error){throw fail(409,error.message);}return;
+      }
       if (request.method === 'POST' && url.pathname === '/v1/select') {
         const input = await body(request);
         if (typeof input.threadId !== 'string') throw fail(400, '需要聊天 ID');
@@ -162,8 +176,8 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {
         const input = await body(request);
-        if (typeof input.threadId !== 'string' || !['start', 'steer', 'queue', 'queue-remove', 'interrupt', 'approve', 'model', 'answer'].includes(input.op)) throw fail(400, '不支持的操作');
-        if (['start', 'steer','queue'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 16000)) throw fail(400, '消息应为 1–16000 字符');
+        if (typeof input.threadId !== 'string' || !['start', 'steer', 'queue', 'queue-remove', 'interrupt', 'approve', 'model', 'answer','compact'].includes(input.op)) throw fail(400, '不支持的操作');
+        if (['start', 'steer','queue'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim()&&!input.attachmentIds?.length || input.text.length > 16000)) throw fail(400, '请输入消息或选择附件，最多 16000 字符');
         if (!bridge.snapshot().some(thread => thread.id === input.threadId)) throw fail(403, '聊天不在授权范围内');
         const id = request.headers['idempotency-key'];
         if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(id)) throw fail(400, '缺少有效操作编号');
@@ -179,7 +193,10 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
             const action = { at: new Date().toISOString(), deviceName: sessions.get(sessionHash)?.name,
               threadId: input.threadId, op: input.op, requestId: input.requestId, decision: input.decision };
             try {
-              const result = await bridge.command(input.threadId, input);
+              // Never accept caller-supplied computer paths or composer objects.
+              const attachments=input.attachmentIds?.length?uploads?.resolve(input.attachmentIds,sessionHash,input.threadId):[];
+              if(input.attachmentIds?.length&&!attachments)throw fail(501,'请更新电脑插件以发送附件');
+              const result = await bridge.command(input.threadId, {...input,attachments});
               server.emit('controlAction', { ...action, ok: true }); return result;
             } catch (error) { server.emit('controlAction', { ...action, ok: false }); throw error; }
           }) };

@@ -4,6 +4,7 @@
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { messageInput } from './message-input.mjs';
 
 export const DEFAULT_PIPE = '\\\\.\\pipe\\codex-ipc';
 export const PROTOCOL_VERSIONS = Object.freeze({
@@ -16,6 +17,7 @@ export const PROTOCOL_VERSIONS = Object.freeze({
   'thread-follower-start-turn': 2,
   'thread-follower-load-complete-history': 1,
   'thread-follower-steer-turn': 1,
+  'thread-follower-compact-thread': 1,
   'thread-follower-interrupt-turn': 4,
   'thread-follower-set-queued-follow-ups-state': 1,
   'thread-follower-remove-queued-message': 1,
@@ -247,23 +249,23 @@ export class DesktopIpcClient extends EventEmitter {
     return response.result;
   }
 
-  startTurn(threadId, text, { ownerId, request = {}, context = {} } = {}) {
-    if (typeof text !== 'string' || !text.trim()) throw new Error('A non-empty test message is required');
+  startTurn(threadId, text, { ownerId, request = {}, context = {}, attachments=[],skills=[],cwd } = {}) {
+    if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
+    const message=messageInput(text,{attachments,skills,cwd});
     return this.#control(threadId, 'thread-follower-start-turn', {
-      turnStart: { request: { ...request, threadId, clientUserMessageId: randomUUID(), input: [{ type: 'text', text, text_elements: [] }] }, context },
+      turnStart: { request: { ...request, threadId, clientUserMessageId: message.id, input: message.input }, context: {...context,messageThreadId:message.context.messageThreadId,restoreMessage:message.restoreMessage,attachments:message.attachments,localTurnMetadata:message.localTurnMetadata} },
     }, ownerId);
   }
 
-  steerTurn(threadId, text, { ownerId, cwd } = {}) {
-    if (typeof text !== 'string' || !text.trim()) throw new Error('A non-empty steering message is required');
-    const id = randomUUID();
+  steerTurn(threadId, text, { ownerId, cwd,attachments=[],skills=[] } = {}) {
+    if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
+    const message=messageInput(text,{attachments,skills,cwd});
     return this.#control(threadId, 'thread-follower-steer-turn', {
-      input: [{ type: 'text', text, text_elements: [] }], clientUserMessageId: id,
-      restoreMessage: { id, text, cwd, createdAt: Date.now(),
-        context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null, imageAttachments: [], commentAttachments: [] } },
+      input: message.input, clientUserMessageId: message.id,attachments:message.attachments,restoreMessage:message.restoreMessage,
     }, ownerId);
   }
 
+  compactThread(threadId,ownerId){return this.#control(threadId,'thread-follower-compact-thread',{},ownerId);}
   interruptTurn(threadId, expectedTurnId, ownerId) {
     if (typeof expectedTurnId !== 'string' || !expectedTurnId) throw new Error('Expected active turn ID is required');
     return this.#control(threadId, 'thread-follower-interrupt-turn', { expectedTurnId, mode: 'user-stop' }, ownerId);

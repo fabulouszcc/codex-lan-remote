@@ -545,4 +545,7 @@ public class MobileStateTest {
         after.getJSONArray("threads").getJSONObject(0).getJSONArray("turns").getJSONObject(0).put("startedAtMs", 500);
         assertEquals(0, MobileState.alerts(before, after).length());
     }
+    @Test public void slashSuggestionsDoNotConsumeArgumentsOrFilesystemPaths(){
+        assertTrue(SlashCommands.suggesting("/"));assertTrue(SlashCommands.matches("/mo","model"));assertFalse(SlashCommands.suggesting("/pr instructions"));assertFalse(SlashCommands.suggesting("/etc/config"));assertFalse(SlashCommands.suggesting("normal"));assertEquals("model",SlashCommands.builtin(" /model "));assertEquals("",SlashCommands.builtin("/model gpt"));assertEquals("",SlashCommands.builtin("/unknown"));assertEquals("",SlashCommands.builtin("/pr"));
+    }
 }

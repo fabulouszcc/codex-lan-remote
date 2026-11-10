@@ -19,6 +19,26 @@ class Client extends EventEmitter {
 }
 const stored = [{ id: 'saved-turn', status: 'completed', input: 'old question', agentMessages: ['old answer'], toolResults: [] }];
 
+test('slash skills resolve only installed names and compact stays owner-bound, writable and idle',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();let sent,compact;
+  bridge.historyReader.skills=async()=>[{name:'pr',path:'C:\\skills\\pr\\SKILL.md',description:'Write PRs',enabled:true}];
+  client.startTurn=async(...args)=>{sent=args;};client.compactThread=async(...args)=>{compact=args;};
+  assert.deepEqual(await bridge.skills('active'),{skills:[{name:'pr',description:'Write PRs'}]});
+  await bridge.command('active',{op:'start',text:'/pr summarize',skills:[{name:'bad',path:'secret'}]});assert.equal(sent[1],'$pr summarize');assert.equal(sent[2].skills[0].path,'C:\\skills\\pr\\SKILL.md');
+  await assert.rejects(bridge.command('active',{op:'start',text:'/unknown'}),/不可用/);
+  await assert.rejects(bridge.command('active',{op:'queue',text:'/pr test'}),/空闲/);
+  await bridge.command('active',{op:'compact'});assert.deepEqual(compact,['active','owner']);
+  bridge.entries.get('active').writable=false;await assert.rejects(bridge.command('active',{op:'compact'}),/读取/);await assert.rejects(bridge.skills('active'),/授权/);
+  bridge.entries.get('active').writable=true;client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:{turns:[{turnId:'busy',status:'inProgress',items:[]}]}}});await assert.rejects(bridge.command('active',{op:'compact'}),/任务结束/);
+});
+
+test('queued phone files persist native attachment context without duplicating file bytes',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let queue=[];
+  bridge.historyReader.queuedMessages=async()=>queue;client.setQueuedFollowUps=async(id,messages)=>{queue=messages;client.emit('queuedMessages',{conversationId:id,messages});};await bridge.connect();
+  await bridge.command('active',{op:'queue',text:'',attachments:[{id:'file',name:'proof.txt',kind:'text',path:'C:\\attachments\\proof.txt'},{id:'image',name:'proof.png',kind:'image',path:'C:\\attachments\\proof.png'}]});
+  assert.equal(queue[0].context.fileAttachments[0].fsPath,'C:\\attachments\\proof.txt');assert.equal(queue[0].context.imageAttachments[0].localPath,'C:\\attachments\\proof.png');assert.equal(queue[0].prompt,'');assert.ok(JSON.stringify(queue).length<2048);assert.match(bridge.snapshot()[0].queuedMessages[0].text,/proof.txt.*proof.png/);
+});
+
 test('an old inProgress flag cannot keep a finished chat busy or expose stale approvals and questions',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
   const state={turns:[{turnId:'old',status:'inProgress',items:[{type:'agentMessage',id:'q',questions:[{title:'Old?'}]}]},{turnId:'latest',status:'completed',items:[]}],requests:[{id:3,method:'item/commandExecution/requestApproval',params:{turnId:'old'}},{id:4,method:'tool/requestUserInput',params:{turnId:'old',questions:[]}}]};

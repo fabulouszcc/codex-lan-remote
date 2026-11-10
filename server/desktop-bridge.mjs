@@ -3,6 +3,7 @@ import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { ThreadState, getTurns, summarizeThread, activeTurn } from './thread-state.mjs';
 import { pendingQuestions, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
+import { messageInput } from './message-input.mjs';
 
 export class DesktopBridge extends EventEmitter {
   constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
@@ -162,7 +163,7 @@ export class DesktopBridge extends EventEmitter {
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
         queueSupported:!!this.historyReader?.queuedMessages,
-        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
+        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.text||message.context?.prompt||[...message.context?.fileAttachments||[],...message.context?.imageAttachments||[]].map(row=>row.label||row.filename||'附件').join('、')).slice(0,16000),status:message.submission?.status||'queued'})),
         model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
         serviceTier:state?.latestThreadSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
@@ -203,7 +204,21 @@ export class DesktopBridge extends EventEmitter {
     if (!entry.writable) throw new Error('此聊天仅允许读取，请在电脑授权后操作');
     const state = entry.store.state;
     const active = activeTurn(state);
-    if (command.op === 'model') {
+    if(['start','steer','queue'].includes(command.op)){
+      command={...command,skills:[]};
+      const slash=/^\/([\w.-]+)(?=\s|$)/.exec(command.text);
+      if(slash){
+        const skills=await this.historyReader?.skills?.(state.cwd);
+        const matches=(skills||[]).filter(row=>row.name===slash[1]);
+        if(matches.length!==1)throw Error('此斜杠命令或技能不可用，请从手机命令列表选择');
+        if(command.op==='queue')throw Error('技能消息请在空闲时发送，或切换为立即插话');
+        command={...command,text:'$'+slash[1]+command.text.slice(slash[0].length),skills:[matches[0]]};
+      }
+    }
+    if(command.op==='compact'){
+      if(active)throw Error('请在当前任务结束后压缩上下文');
+      await this.client.compactThread(threadId,entry.owner);
+    } else if (command.op === 'model') {
       const {models}=await this.modelOptions(threadId);
       const model=models.find(row=>row.model===command.model);
       if(!model || !model.efforts.includes(command.effort))throw Error('模型或思考强度不在电脑可用列表中，请刷新后选择');
@@ -222,7 +237,7 @@ export class DesktopBridge extends EventEmitter {
       const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
       if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
       const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
-        context:{prompt:command.text,addedFiles:[],fileAttachments:[],imageAttachments:[],commentAttachments:[],ideContext:null,messageThreadId:randomUUID()},
+        context:messageInput(command.text,{attachments:command.attachments,cwd:state.cwd,id}).context,
         submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
       await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
@@ -230,10 +245,10 @@ export class DesktopBridge extends EventEmitter {
       await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
-      await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
+      await this.client.startTurn(threadId, command.text, { ownerId: entry.owner,cwd:state.cwd,attachments:command.attachments,skills:command.skills });
     } else if (command.op === 'steer') {
       if (!active) throw new Error('没有正在执行的任务');
-      await this.client.steerTurn(threadId, command.text, { ownerId: entry.owner, cwd: state.cwd });
+      await this.client.steerTurn(threadId, command.text, { ownerId: entry.owner, cwd: state.cwd,attachments:command.attachments,skills:command.skills });
     } else if (command.op === 'interrupt') {
       if (!active || command.turnId !== active.turnId) throw new Error('任务已变化，请刷新后重试');
       await this.client.interruptTurn(threadId, active.turnId, entry.owner);
@@ -268,6 +283,13 @@ export class DesktopBridge extends EventEmitter {
       await this.client[method](threadId, command.requestId, command.decision, entry.owner);
     } else throw new Error('不支持的操作');
     return { accepted: true };
+  }
+  async skills(threadId){
+    const entry=this.entries.get(threadId);if(!entry?.ready||!entry.writable)throw Error('聊天未授权写入或尚未就绪');
+    if(!this.historyReader?.skills)throw Error('请更新电脑插件以读取技能');
+    const rows=await this.historyReader.skills(entry.store.state.cwd),counts=new Map();
+    for(const row of rows)counts.set(row.name,(counts.get(row.name)||0)+1);
+    return {skills:rows.filter(row=>counts.get(row.name)===1&&/^[\w.-]+$/.test(row.name)).map(row=>({name:row.name,description:String(row.shortDescription||row.description||'').slice(0,240)}))};
   }
   async modelOptions(threadId){
     const entry=this.entries.get(threadId);
