@@ -166,3 +166,34 @@ test('current turn comes from the live owner, never an unfinished history snapsh
   client.emit('disconnected');
   assert.equal(bridge.snapshot()[0].activeTurnId, '');
 });
+
+test('permission and tool elicitation requests are visible as read-only attention without exposing raw payloads',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());await bridge.connect();
+  const requests=[{id:31,method:'item/permissions/requestApproval',params:{turnId:'turn',reason:'Allow browser?',permissions:{credentials:'PRIVATE'}}},{id:32,method:'mcpServer/elicitation/request',params:{turnId:'turn',message:'Confirm tool setup',url:'https://example.invalid/?token=PRIVATE'}},{id:33,method:'item/tool/requestOptionPicker',params:{turnId:'turn'}},{id:34,method:'item/permissions/requestApproval',params:{turnId:'old'}}];
+  client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:{turns:[{turnId:'turn',status:'inProgress',items:[]}],requests}}});
+  const row=bridge.snapshot()[0];assert.deepEqual(row.attentionRequests?.map(r=>r.id),[31,32,33]);assert.equal(row.approvals.length,0);assert.ok(!JSON.stringify(row.attentionRequests).includes('PRIVATE'));
+  await assert.rejects(bridge.command('active',{op:'approve',turnId:'turn',requestId:31,decision:'accept'}));
+  requests[0].completed=true;client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:{turns:[{turnId:'turn',status:'inProgress',items:[]}],requests}}});assert.deepEqual(bridge.snapshot()[0].attentionRequests.map(r=>r.id),[32,33]);
+  client.emit('disconnected');assert.deepEqual(bridge.snapshot()[0].attentionRequests,[]);
+});
+
+test('refreshing queues preserves a newer owner broadcast and supports native text entries',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[];await bridge.connect();let release;
+  bridge.historyReader.queuedMessages=()=>new Promise(resolve=>{release=resolve;});const refresh=bridge.refreshQueue(bridge.entries.get('active'),bridge.generation);await Promise.resolve();
+  client.emit('queuedMessages',{conversationId:'active',messages:[{id:'newer',text:'native server message'}]});release([{id:'stale',prompt:'outdated'}]);await refresh;assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(r=>r.text),['native server message']);
+});
+test('adding a mobile draft never copies server queue entries into the local queue setter',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',text:'server message'},{id:'local',prompt:'local message'}];bridge.historyReader.localQueuedMessages=async()=>[{id:'local',prompt:'local message'}];let written;client.setQueuedFollowUps=async(id,messages)=>{written=messages;};await bridge.connect();await bridge.command('active',{op:'queue',text:'mobile'});assert.deepEqual(written.map(r=>r.prompt),['local message','mobile']);assert.ok(!written.some(r=>r.id==='server'));
+});
+
+test('legacy owner broadcasts do not erase cached server queue entries',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',clientUserMessageId:'echo',serverQueue:true,prompt:'server message'}];await bridge.connect();client.emit('queuedMessages',{conversationId:'active',messages:[{id:'echo',prompt:'duplicate'},{id:'local',prompt:'new local'}]});assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(r=>r.id),['server','local']);
+});
+
+test('catalog refresh reflects desktop renames for previously opened chats',async t=>{
+  const {bridge}=fixture([{id:'active',name:'stale'}]);t.after(()=>bridge.close());await bridge.connect();bridge.historyReader.list=async()=>[{id:'active',name:'desktop renamed'}];bridge.catalogAt=0;assert.equal((await bridge.catalog()).find(row=>row.id==='active').name,'desktop renamed');assert.equal(bridge.snapshot()[0].name,'desktop renamed');
+});
+test('automatic naming waits for completion and is limited to tracked phone-created chats',async t=>{
+  const named=[];const autoTitles={wants:id=>id==='active',generate:async options=>{named.push(options);return 'generated';},close(){}};const {bridge,client}=fixture([{id:'active'}],{autoTitles});t.after(()=>bridge.close());await bridge.connect();
+  const state={cwd:'project',turns:[{turnId:'t',status:'inProgress',items:[{type:'userMessage',id:'u',content:[{type:'text',text:'first request'}]}]}],requests:[]};client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:2,conversationState:state}});assert.equal(named.length,0);state.turns[0].status='completed';client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:state}});await Promise.resolve();assert.equal(named.length,1);assert.equal(named[0].prompt,'first request');assert.equal(bridge.snapshot()[0].name,'generated');
+});

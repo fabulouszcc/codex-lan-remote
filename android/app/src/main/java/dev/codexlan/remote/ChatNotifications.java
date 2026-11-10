@@ -34,11 +34,12 @@ final class ChatNotifications {
         connected.setShowBadge(false);
         manager.createNotificationChannel(connected);
         manager.createNotificationChannel(new NotificationChannel("chat_approval", "需要审批", NotificationManager.IMPORTANCE_HIGH));
+        manager.createNotificationChannel(new NotificationChannel("chat_attention", "等待回复与电脑权限请求", NotificationManager.IMPORTANCE_HIGH));
         NotificationChannel results = new NotificationChannel(resultChannel(context), "任务完成或失败（横幅提醒）", NotificationManager.IMPORTANCE_HIGH);
         results.setDescription("任务结束时提醒。小米手机请同时开启应用和此类别的悬浮通知、锁屏通知。");
         manager.createNotificationChannel(results);
         for (android.service.notification.StatusBarNotification notification : manager.getActiveNotifications())
-            if (notification.getTag() != null && notification.getTag().startsWith("approval:")) manager.cancel(notification.getTag(), 1);
+            if (notification.getTag() != null && (notification.getTag().startsWith("approval:")||notification.getTag().startsWith("question:")||notification.getTag().startsWith("attention:"))) manager.cancel(notification.getTag(), 1);
     }
     private PendingIntent open(String threadId) {
         Intent intent = new Intent(context, MainActivity.class).putExtra("threadId", threadId)
@@ -48,7 +49,7 @@ final class ChatNotifications {
     Notification background() {
         PendingIntent stop = PendingIntent.getService(context, 0, new Intent(context, SessionService.class).setAction("stop"), PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(context, "chat_connection").setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("Codex LAN · 后台同步").setContentText("接收任务和审批提醒；可在 App 的通知设置中隐藏此提示")
+            .setContentTitle("Codex LAN · 后台同步").setContentText("接收任务、审批和等待回复提醒；可在通知设置中隐藏此提示")
             .setOngoing(false).setOnlyAlertOnce(true).setShowWhen(false).setContentIntent(open(""))
             .addAction(new Notification.Action.Builder(null, "停止同步", stop).build()).build();
     }
@@ -71,6 +72,17 @@ final class ChatNotifications {
                 manager.notify(tag, 1, new Notification.Builder(context, resultChannel(context)).setSmallIcon(android.R.drawable.stat_notify_chat)
                     .setContentTitle("quota".equals(alert.optString("failureReason"))?"Codex 额度不足，任务已中断":"rateLimit".equals(alert.optString("failureReason"))?"Codex 请求受限，任务已中断":"contextLimit".equals(alert.optString("failureReason"))?"Codex 上下文已满，任务已中断":alert.getString("status").equals("completed") ? "Codex 任务已完成" : "Codex 任务失败")
                     .setContentText("quota".equals(alert.optString("failureReason"))?"请检查账号额度或服务商余额，点击查看聊天":"点击查看对应聊天").setContentIntent(open(thread)).setAutoCancel(true).setVisibility(Notification.VISIBILITY_PRIVATE).build());
+            } else if(alert.getString("kind").equals("question")||alert.getString("kind").equals("attention")){
+                JSONObject request=alert.getJSONObject("request");String kind=alert.getString("kind");
+                String tag=kind+":"+computer+":"+thread+":"+request.optString("kind")+":"+request.optString("turnId")+":"+request.get("id");active.add(tag);
+                if(!posted.add(tag))continue;
+                String title="Codex 等待您的回复",details="点击打开聊天并回复问题";
+                if(kind.equals("attention")){title=request.optString("title","Codex 需要您处理");details=request.optString("message","请在电脑 Codex 中查看并处理此请求。");}
+                else{JSONArray fields=request.optJSONArray("questions");if(fields!=null&&fields.length()>0)details=fields.getJSONObject(0).optString("title",details);}
+                if(details.length()>500)details=details.substring(0,500)+"…";
+                manager.notify(tag,1,new Notification.Builder(context,"chat_attention").setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle(title).setContentText(details).setStyle(new Notification.BigTextStyle().bigText(details))
+                    .setContentIntent(open(thread)).setVisibility(Notification.VISIBILITY_PRIVATE).setOnlyAlertOnce(true).setAutoCancel(true).build());
             } else {
                 JSONObject request = alert.getJSONObject("request"); String tag = "approval:" + computer + ":" + thread + ":" + request.optString("turnId") + ":" + request.get("id"); active.add(tag);
                 if (!posted.add(tag)) continue;

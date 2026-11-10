@@ -1,6 +1,23 @@
 import { getTurns, activeTurn } from './thread-state.mjs';
 import { userText } from './turn-timeline.mjs';
 
+// Some desktop permission/tool requests have no supported mobile response API.
+// Notify without forwarding raw permission payloads or inventing approval choices.
+export function pendingAttention(state) {
+  const active=activeTurn(state);if(!active)return [];
+  const titles={
+    'item/permissions/requestApproval':'Codex 需要电脑权限授权',
+    'mcpServer/elicitation/request':'Codex 工具需要您确认',
+    'item/tool/requestOptionPicker':'Codex 等待您完成选择',
+  };
+  return (state?.requests||[]).flatMap(request=>{
+    const kind=request.method||request.type,title=titles[kind],params=request.params||{},id=request.id??request.requestId;
+    if(!title||request.completed===true||id===undefined||params.turnId&&params.turnId!==active.turnId)return [];
+    if(params.itemId&&!(active.items||[]).some(item=>item.id===params.itemId))return [];
+    return [{id,kind,turnId:active.turnId,title,message:'请在电脑 Codex 中查看并处理此请求。'}];
+  });
+}
+
 export function pendingQuestions(state) {
   const turns = getTurns(state), answered = new Set();
   const active=activeTurn(state);
@@ -16,7 +33,7 @@ export function pendingQuestions(state) {
       for (const reply of Array.isArray(parsed) ? parsed : [parsed]) answered.add(reply.questionItemId);
     } catch { /* Malformed user text is never treated as a response. */ }
   }
-  const rows = (state?.requests || []).filter(r => /requestUserInput/.test(r.type || r.method || '')
+  const rows = (state?.requests || []).filter(r => r.completed!==true && /requestUserInput/.test(r.type || r.method || '')
     && (!r.params?.turnId||r.params.turnId===active.turnId) && !completed.has(String(r.id??r.requestId))).map(r => ({
     id: r.id ?? r.requestId, kind: 'native', turnId: r.params?.turnId,
     questions: (r.params?.questions || []).map(q => ({ id: q.id, title: q.question, header: q.header,

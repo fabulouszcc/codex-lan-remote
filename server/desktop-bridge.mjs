@@ -1,23 +1,27 @@
 import { EventEmitter } from 'node:events';
 import { DesktopIpcClient } from './desktop-ipc.mjs';
 import { ThreadState, getTurns, summarizeThread, activeTurn } from './thread-state.mjs';
-import { pendingQuestions, validateAnswers } from './user-questions.mjs';
+import { pendingQuestions, pendingAttention, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
-  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
+  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator,autoTitles } = {}) {
     super();
     this.entries = new Map(threads.map(thread => [thread.id, { ...thread, writable: true, history: [], store: new ThreadState(), ready: false, consumed: new Set() }]));
     this.historyReader = historyReader;
     this.backgroundHistoryReader=backgroundHistoryReader;
     this.allowSelectedChats = allowSelectedChats;
     this.chatCreator=chatCreator;
+    this.autoTitles=autoTitles;
     this.catalogRows = threads;
     this.clientFactory = clientFactory;
     this.generation = 0;
     this.closed = false;
     this.refreshTimer = setInterval(() => {
-      if (!this.closed && this.client?.initialized) for (const entry of this.entries.values()) if (!entry.ready) void this.hydrate(entry, this.generation);
+      if (!this.closed && this.client?.initialized) for (const entry of this.entries.values()) {
+        if (!entry.ready) void this.hydrate(entry, this.generation);
+        else void this.refreshQueue(entry,this.generation);
+      }
     }, 10000);
     this.refreshTimer.unref();
   }
@@ -28,12 +32,16 @@ export class DesktopBridge extends EventEmitter {
     for (const entry of this.entries.values()) { entry.ready = false; }
     const client = this.clientFactory({ controlThreadIds: [...this.entries.values()].filter(entry => entry.writable).map(entry => entry.id), timeoutMs: 30000 });
     this.client = client;
-    client.on('queuedMessages',({conversationId,messages})=>{if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;entry.nativeQueue=messages;entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');});
+    client.on('queuedMessages',({conversationId,messages})=>{
+      if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;
+      const server=(entry.nativeQueue||[]).filter(row=>row.serverQueue),clients=new Set(server.map(row=>row.clientUserMessageId));
+      entry.nativeQueue=[...server,...messages.filter(row=>!clients.has(row.id))];entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');
+    });
     client.on('threadState', ({ conversationId, change }) => {
       if (generation !== this.generation) return;
       const entry = this.entries.get(conversationId);
       if (!entry) return;
-      try { entry.store.apply(change); entry.ready = true; this.emit('changed'); }
+      try { entry.store.apply(change); entry.ready = true; this.emit('changed');this.maybeAutoTitle(entry,generation); }
       catch { this.repairEntry(entry, generation); }
     });
     client.on('disconnected', () => {
@@ -56,7 +64,7 @@ export class DesktopBridge extends EventEmitter {
       try { this.catalogRows = await this.historyReader.list(); this.catalogAt = Date.now(); } catch { /* Keep known chats available. */ }
     }
     const rows = new Map(this.catalogRows.map(row => [row.id, row]));
-    for (const entry of this.entries.values()) {if(entry.autoName&&rows.get(entry.id)?.name)entry.name=rows.get(entry.id).name;rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });}
+    for (const entry of this.entries.values()) {if(rows.get(entry.id)?.name)entry.name=rows.get(entry.id).name;rows.set(entry.id, { ...rows.get(entry.id), id: entry.id, name: entry.name });}
     return [...rows.values()];
   }
   async usage() {
@@ -68,6 +76,7 @@ export class DesktopBridge extends EventEmitter {
     const cwd=this.entries.get(baseThreadId)?.store.state?.cwd||this.historyReader?.threadDirectories?.get(baseThreadId);if(!cwd)throw Error('当前会话工作目录未就绪，请选择其他项目');
     const title=typeof name==='string'?name.trim().slice(0,80):'';
     const created=await this.chatCreator.create({cwd,name:title,model:this.entries.get(baseThreadId)?.store.state?.latestModel});
+    if(!title)await this.autoTitles?.remember(created.id,created.name).catch(()=>{});
     const row={id:created.id,name:created.name,groupId:base.groupId==='pinned'?'chats':base.groupId,groupName:base.groupId==='pinned'?'其他会话':base.groupName,groupOrder:base.groupOrder,updatedAt:Date.now()/1000};
     this.catalogRows.push(row);this.entries.set(created.id,{...row,autoName:!title,writable:true,history:[],store:new ThreadState(),ready:false,consumed:new Set()});this.client?.enableThreadControl(created.id);this.catalogAt=0;this.emit('changed');
     try{await this.chatCreator.show(created.id);}catch{/* Keep the created chat; never create a duplicate because opening the window failed. */}
@@ -133,6 +142,25 @@ export class DesktopBridge extends EventEmitter {
       if(entry.repairPending&&!this.closed&&generation===this.generation){entry.repairTimer=setTimeout(()=>void this.hydrate(entry,generation),250);entry.repairTimer.unref();}
     }
   }
+  async refreshQueue(entry,generation){
+    if(!this.historyReader?.queuedMessages||entry.queueLoading)return;
+    entry.queueLoading=true;const epoch=entry.queueEpoch||0;
+    try{
+      const queue=await this.historyReader.queuedMessages(entry.id);
+      if(!this.closed&&generation===this.generation&&this.entries.get(entry.id)===entry&&(entry.queueEpoch||0)===epoch){entry.nativeQueue=queue;this.emit('changed');}
+    }catch{/* A temporary read failure must not erase the last observed queue. */}
+    finally{entry.queueLoading=false;}
+  }
+  maybeAutoTitle(entry,generation){
+    if(!entry.ready||!this.autoTitles?.wants(entry.id))return;
+    const turns=summarizeThread(entry.store.state).turns;
+    if(turns.at(-1)?.status!=='completed')return;
+    const prompt=turns.find(turn=>turn.input)?.input;if(!prompt)return;
+    void this.autoTitles.generate({threadId:entry.id,cwd:entry.store.state?.cwd,prompt,
+      canApply:()=>!this.closed&&generation===this.generation&&this.entries.get(entry.id)===entry}).then(title=>{
+      if(title&&!this.closed){entry.name=title;this.catalogAt=0;this.emit('changed');}
+    }).catch(()=>{});
+  }
   repairEntry(entry,generation){
     entry.ready=false;entry.resubscribe=true;entry.repairPending=true;this.emit('changed');
     if(entry.loadingGeneration!==generation)void this.hydrate(entry,generation);
@@ -162,7 +190,7 @@ export class DesktopBridge extends EventEmitter {
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
         queueSupported:!!this.historyReader?.queuedMessages,
-        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
+        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.text||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
         model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
         serviceTier:state?.latestThreadSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
@@ -175,6 +203,7 @@ export class DesktopBridge extends EventEmitter {
         revision: entry.store.revision, runtimeStatus: summary.runtimeStatus || 'unavailable',
         turns: [...turns.values()].slice(-50),
         questions: entry.ready ? pendingQuestions(state).map(q => ({ ...q, submitting: entry.consumed.has(JSON.stringify(['question', q.turnId, q.id])) })) : [],
+        attentionRequests: entry.ready ? pendingAttention(state) : [],
         approvals: (liveTurn ? state?.requests || [] : []).flatMap(request => {
           const type = String(request.type || request.method || '');
           const kind = /command/i.test(type) ? 'command' : /file/i.test(type) ? 'file' : null;
@@ -219,15 +248,16 @@ export class DesktopBridge extends EventEmitter {
       this.emit('changed');
     } else if(command.op==='queue'){
       if(!this.historyReader?.queuedMessages)throw Error('桌面排队状态暂不可读，请更新电脑插件');
-      const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
+      const epoch=entry.queueEpoch||0,stored=await (this.historyReader.localQueuedMessages?.(threadId)??this.historyReader.queuedMessages(threadId));
+      if(!this.historyReader.localQueuedMessages&&(entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
       if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
       const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
         context:{prompt:command.text,addedFiles:[],fileAttachments:[],imageAttachments:[],commentAttachments:[],ideContext:null,messageThreadId:randomUUID()},
         submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
-      await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
+      await this.client.setQueuedFollowUps(threadId,[...stored,message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
       if(!(entry.nativeQueue||[]).some(row=>row.id===command.messageId))throw Error('排队消息已变化，请刷新');
-      await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
+      await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);entry.nativeQueue=(entry.nativeQueue||[]).filter(row=>row.id!==command.messageId);this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
       await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
@@ -279,5 +309,5 @@ export class DesktopBridge extends EventEmitter {
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
     return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
   }
-  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
+  close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();this.autoTitles?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
 }

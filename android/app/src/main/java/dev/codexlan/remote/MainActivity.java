@@ -774,6 +774,10 @@ public final class MainActivity extends Activity {
                 LinearLayout activity=vertical();TextView label=text(row.data.optString("label","正在思考…"),13,muted);activity.addView(label);String summary=row.data.optString("summary");if(!summary.isEmpty())activity.addView(text(summary,13,muted));wrapper.addView(activity);
             }
             else if("question".equals(row.type))wrapper.addView(questionCard(row));
+            else if("attention".equals(row.type)){
+                wrapper.addView(text(row.data.optString("title","Codex 需要您处理"),15,foreground));
+                wrapper.addView(text(row.data.optString("message","请在电脑 Codex 中查看并处理此请求。"),13,muted));
+            }
             else if("approval".equals(row.type)){
                 JSONObject approval=row.data;String threadId=currentThread.optString("id");
                 Button reviewButton=button(approval.optBoolean("submitting")?"审批已提交 · 等待确认":"查看并处理"+("file".equals(approval.optString("kind"))?"文件审批":"命令审批"));reviewButton.setEnabled(!approval.optBoolean("submitting"));reviewButton.setOnClickListener(v->review(approval,threadId));wrapper.addView(reviewButton);

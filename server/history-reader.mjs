@@ -35,14 +35,14 @@ export class HistoryReader {
       }
       const entry = this.pending.get(value.id); if (!entry) return;
       this.pending.delete(value.id); clearTimeout(entry.timer);
-      if (value.error) entry.reject(Error('历史接口读取失败')); else entry.resolve(value.result);
+      if (value.error) entry.reject(Object.assign(Error('历史接口读取失败'),{code:value.error.code})); else entry.resolve(value.result);
     });
     await this.request('initialize', { clientInfo: { name: 'codex_lan_history', version: '0.2.0' }, capabilities: { experimentalApi: true } });
     child.stdin.write('{"method":"initialized"}\n');
     this.initialized = true;
   }
   request(method, params) {
-    if (!['initialize', 'thread/list', 'thread/turns/list', 'model/list', 'account/rateLimits/read'].includes(method)) throw Error('历史客户端禁止该操作');
+    if (!['initialize', 'thread/list', 'thread/turns/list', 'thread/queue/list', 'model/list', 'account/rateLimits/read'].includes(method)) throw Error('历史客户端禁止该操作');
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => { this.pending.delete(id); reject(Error('历史读取超时')); }, 15000);
@@ -65,8 +65,28 @@ export class HistoryReader {
     try{const pinned=[];let cursor;const seen=new Set();do{const page=await this.request('thread/list',{limit:100,sectionId:PINNED_SECTION_ID,sortKey:'section_position',...(cursor?{cursor}:{})});pinned.push(...(page.data||[]).map(row=>row.id));cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('置顶分页游标重复');if(cursor)seen.add(cursor);}while(cursor);sidebar._desktopPinnedIds=pinned;}catch{ /* Older desktop versions retain legacy pin order. */ }
     return groupThreads([...new Map(threads.map(row=>[row.id,row])).values()], sidebar);
   }
-  async queuedMessages(threadId){
+  async localQueuedMessages(threadId){
     const sidebar=await this.sidebarReader();const rows=sidebar['queued-follow-ups']?.[threadId];return Array.isArray(rows)?rows:[];
+  }
+  async queuedMessages(threadId){
+    const local=await this.localQueuedMessages(threadId);let server=[];
+    if(this.serverQueueSupported!==false){
+      try{
+        await this.connect();let cursor;const seen=new Set();
+        do{
+          const page=await this.request('thread/queue/list',{threadId,limit:100,...cursor?{cursor}:{}});
+          server.push(...(page.data||[]).filter(row=>typeof row.id==='string').map(row=>({id:row.id,clientUserMessageId:row.clientUserMessageId,serverQueue:true,
+            prompt:(row.input||[]).filter(item=>item.type==='text').map(item=>String(item.text||'')).join('\n')})));
+          cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('排队消息分页游标重复');if(cursor)seen.add(cursor);
+        }while(cursor&&server.length<100);
+        this.serverQueues??=new Map();this.serverQueues.set(threadId,server);
+      }catch(error){
+        if(error.code===-32601)this.serverQueueSupported=false;
+        else server=this.serverQueues?.get(threadId)||[];
+      }
+    }
+    const clients=new Set(server.map(row=>row.clientUserMessageId));
+    return [...server,...local.filter(row=>!clients.has(row.id))];
   }
   async models() {
     await this.connect();
