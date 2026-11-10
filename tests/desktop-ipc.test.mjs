@@ -145,6 +145,11 @@ test('model changes use the installed settings protocol and forward only model a
   assert.equal(sent.version,2);assert.deepEqual(sent.params.threadSettings,{model:'available-model',effort:'high'});assert.equal(sent.targetClientId,'desktop-owner');
 });
 
+test('compact uses the verified follower protocol rather than resuming the thread',async t=>{
+  const {client,messages}=await fixture(t,(request,send)=>{if(request.method==='thread-follower-compact-thread')respond(request,send,{});},{controlThreadIds:['allowed-thread']});
+  await client.compactThread('allowed-thread','desktop-owner');const sent=messages.find(row=>row.method==='thread-follower-compact-thread');assert.equal(sent.version,1);assert.deepEqual(sent.params,{conversationId:'allowed-thread'});assert.equal(sent.targetClientId,'desktop-owner');await assert.rejects(client.compactThread('other-thread','desktop-owner'),/not enabled/);
+});
+
 test('start and steer forward native attachment metadata alongside localImage input',async t=>{
   const {client,messages}=await fixture(t,(request,send)=>{if(['thread-follower-start-turn','thread-follower-steer-turn'].includes(request.method))respond(request,send,{});},{controlThreadIds:['allowed-thread']});
   const attachments=[{id:'image',kind:'image',name:'image.png',path:'C:\\attachments\\image.png'},{id:'file',kind:'text',name:'notes.md',path:'C:\\attachments\\notes.md'}];

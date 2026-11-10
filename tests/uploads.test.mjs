@@ -35,3 +35,7 @@ test('desktop file headers, image input and queued restore context use original 
   assert.match(message.input[0].text,/# Files mentioned by the user:/);assert.match(message.input[0].text,/Image attachment: true/);assert.match(message.input[0].text,/## My request:\n看附件$/);
   assert.deepEqual(message.input[1],{type:'localImage',path:files[1].path});assert.equal(message.context.fileAttachments[0].fsPath,files[0].path);assert.equal(message.context.imageAttachments[0].localPath,files[1].path);assert.equal(message.localTurnMetadata.fileAttachmentCount,1);assert.equal(message.restoreMessage.text,'看附件');assert.equal(message.attachments[1].isImageAttachment,true);
 });
+
+test('validated skills use typed native input and never enter the file attachment header',()=>{
+  const message=messageInput('$pr test',{skills:[{name:'pr',path:'C:\\skills\\pr\\SKILL.md'}]});assert.deepEqual(message.input[1],{type:'skill',name:'pr',path:'C:\\skills\\pr\\SKILL.md'});assert.equal(message.input[0].text,'$pr test');assert.deepEqual(message.attachments,[]);
+});

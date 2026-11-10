@@ -42,7 +42,7 @@ export class HistoryReader {
     this.initialized = true;
   }
   request(method, params) {
-    if (!['initialize', 'thread/list', 'thread/turns/list', 'model/list', 'account/rateLimits/read'].includes(method)) throw Error('历史客户端禁止该操作');
+    if (!['initialize', 'thread/list', 'thread/turns/list', 'skills/list', 'model/list', 'account/rateLimits/read'].includes(method)) throw Error('历史客户端禁止该操作');
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => { this.pending.delete(id); reject(Error('历史读取超时')); }, 15000);
@@ -51,6 +51,10 @@ export class HistoryReader {
         if (error) { this.pending.delete(id); clearTimeout(timer); reject(Error('历史读取连接不可用')); }
       });
     });
+  }
+  async skills(cwd){
+    await this.connect();const result=await this.request('skills/list',{cwds:[cwd],forceReload:false});
+    return (result.data||[]).filter(row=>row.cwd===cwd).flatMap(row=>row.skills||[]).filter(row=>row.enabled&&typeof row.path==='string'&&typeof row.name==='string');
   }
   async list() {
     await this.connect();

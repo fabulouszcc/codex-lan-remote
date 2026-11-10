@@ -17,6 +17,7 @@ export const PROTOCOL_VERSIONS = Object.freeze({
   'thread-follower-start-turn': 2,
   'thread-follower-load-complete-history': 1,
   'thread-follower-steer-turn': 1,
+  'thread-follower-compact-thread': 1,
   'thread-follower-interrupt-turn': 4,
   'thread-follower-set-queued-follow-ups-state': 1,
   'thread-follower-remove-queued-message': 1,
@@ -248,22 +249,23 @@ export class DesktopIpcClient extends EventEmitter {
     return response.result;
   }
 
-  startTurn(threadId, text, { ownerId, request = {}, context = {}, attachments=[],cwd } = {}) {
+  startTurn(threadId, text, { ownerId, request = {}, context = {}, attachments=[],skills=[],cwd } = {}) {
     if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
-    const message=messageInput(text,{attachments,cwd});
+    const message=messageInput(text,{attachments,skills,cwd});
     return this.#control(threadId, 'thread-follower-start-turn', {
       turnStart: { request: { ...request, threadId, clientUserMessageId: message.id, input: message.input }, context: {...context,messageThreadId:message.context.messageThreadId,restoreMessage:message.restoreMessage,attachments:message.attachments,localTurnMetadata:message.localTurnMetadata} },
     }, ownerId);
   }
 
-  steerTurn(threadId, text, { ownerId, cwd,attachments=[] } = {}) {
+  steerTurn(threadId, text, { ownerId, cwd,attachments=[],skills=[] } = {}) {
     if (typeof text !== 'string' || !text.trim()&&!attachments.length) throw new Error('A message or attachment is required');
-    const message=messageInput(text,{attachments,cwd});
+    const message=messageInput(text,{attachments,skills,cwd});
     return this.#control(threadId, 'thread-follower-steer-turn', {
       input: message.input, clientUserMessageId: message.id,attachments:message.attachments,restoreMessage:message.restoreMessage,
     }, ownerId);
   }
 
+  compactThread(threadId,ownerId){return this.#control(threadId,'thread-follower-compact-thread',{},ownerId);}
   interruptTurn(threadId, expectedTurnId, ownerId) {
     if (typeof expectedTurnId !== 'string' || !expectedTurnId) throw new Error('Expected active turn ID is required');
     return this.#control(threadId, 'thread-follower-interrupt-turn', { expectedTurnId, mode: 'user-stop' }, ownerId);

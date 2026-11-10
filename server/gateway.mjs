@@ -146,6 +146,11 @@ export function createGateway({ tls, bridge, uploads, desktopVersion = '', devic
         if(!bridge.snapshot().some(thread=>thread.id===threadId))throw fail(403,'聊天不在授权范围内');
         try{reply(response,200,await bridge.modelOptions(threadId));}catch(error){throw fail(400,error.message);}return;
       }
+      if(request.method==='GET'&&url.pathname==='/v1/skills'){
+        const threadId=url.searchParams.get('threadId');
+        if(!bridge.snapshot().some(row=>row.id===threadId))throw fail(403,'聊天不在授权范围内');
+        try{reply(response,200,await bridge.skills(threadId));}catch(error){throw fail(409,error.message);}return;
+      }
       if (request.method === 'POST' && url.pathname === '/v1/select') {
         const input = await body(request);
         if (typeof input.threadId !== 'string') throw fail(400, '需要聊天 ID');
@@ -171,7 +176,7 @@ export function createGateway({ tls, bridge, uploads, desktopVersion = '', devic
       }
       if (request.method === 'POST' && url.pathname === '/v1/command') {
         const input = await body(request);
-        if (typeof input.threadId !== 'string' || !['start', 'steer', 'queue', 'queue-remove', 'interrupt', 'approve', 'model', 'answer'].includes(input.op)) throw fail(400, '不支持的操作');
+        if (typeof input.threadId !== 'string' || !['start', 'steer', 'queue', 'queue-remove', 'interrupt', 'approve', 'model', 'answer','compact'].includes(input.op)) throw fail(400, '不支持的操作');
         if (['start', 'steer','queue'].includes(input.op) && (typeof input.text !== 'string' || !input.text.trim()&&!input.attachmentIds?.length || input.text.length > 16000)) throw fail(400, '请输入消息或选择附件，最多 16000 字符');
         if (!bridge.snapshot().some(thread => thread.id === input.threadId)) throw fail(403, '聊天不在授权范围内');
         const id = request.headers['idempotency-key'];

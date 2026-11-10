@@ -92,6 +92,40 @@ public final class MainActivity extends Activity {
     private LinearLayout attachmentTray;
     private android.widget.ScrollView attachmentScroll;
     private Button attachFile;
+    private LinearLayout slashRows;
+    private android.widget.ScrollView slashScroll;
+    private final java.util.Map<String,JSONArray> slashSkills=new java.util.HashMap<>();
+    private final java.util.Set<String> loadingSkills=new java.util.HashSet<>();
+    private String skillListKey="";
+    private void renderSlash(){
+        if(slashRows==null||composer==null)return;slashRows.removeAllViews();String value=composer.getText().toString();
+        if(!SlashCommands.suggesting(value)){slashScroll.setVisibility(View.GONE);return;}
+        boolean skillsOnly=attachmentKey().equals(skillListKey)&&"/skills".equals(value);
+        if(!skillsOnly)for(String name:SlashCommands.BUILTINS.keySet())if(SlashCommands.matches(value,name))slashRow(name,SlashCommands.BUILTINS.get(name),()->runSlash(name));
+        JSONArray skills=slashSkills.get(attachmentKey());
+        if(skills!=null)for(int i=0;i<skills.length();i++){JSONObject row=skills.optJSONObject(i);if(row==null)continue;String name=row.optString("name");if(!SlashCommands.BUILTINS.containsKey(name)&&(skillsOnly||SlashCommands.matches(value,name)))slashRow(name,row.optString("description"),()->{skillListKey="";composer.setText("/"+name+" ");composer.setSelection(composer.length());composer.requestFocus();});}
+        if(slashRows.getChildCount()==0){TextView empty=text(skills==null?"技能尚未加载，输入 /skills 重试":"未找到命令或技能",12,muted);slashRows.addView(empty);}
+        slashScroll.setVisibility(View.VISIBLE);slashScroll.setLayoutParams(new LinearLayout.LayoutParams(-1,dp(Math.min(3,slashRows.getChildCount())*48)));
+        if(skills==null&&!skillsOnly)loadSlashSkills();
+    }
+    private void slashRow(String name,String detail,Runnable action){
+        TextView row=text("/"+name+"  "+detail,13,foreground);row.setTextIsSelectable(false);row.setSingleLine(true);row.setEllipsize(android.text.TextUtils.TruncateAt.END);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setContentDescription("斜杠命令 /"+name+"，"+detail);row.setOnClickListener(v->action.run());slashRows.addView(row,new LinearLayout.LayoutParams(-1,dp(48)));
+    }
+    private void loadSlashSkills(){
+        if(api==null||currentThread==null||!currentThread.optBoolean("ready")||!currentThread.optBoolean("writable"))return;
+        String key=attachmentKey(),chat=selectedThreadId;RemoteApi client=api;int epoch=generation;
+        if(!loadingSkills.add(key))return;
+        worker.execute(()->{try{JSONArray skills=client.readChannel().call("GET","/v1/skills?threadId="+java.net.URLEncoder.encode(chat,"UTF-8"),null,null).getJSONArray("skills");runOnUiThread(()->{loadingSkills.remove(key);if(epoch==generation&&client==api){slashSkills.put(key,skills);renderSlash();}});}catch(Exception e){runOnUiThread(()->{loadingSkills.remove(key);if(epoch==generation&&client==api){if(slashRows!=null&&SlashCommands.suggesting(composer.getText().toString()))toast("技能列表不可用："+error(e));}});}});
+    }
+    private void runSlash(String name){
+        if("skills".equals(name)){skillListKey=attachmentKey();composer.setText("/skills");slashSkills.remove(attachmentKey());loadSlashSkills();renderSlash();return;}
+        composer.setText("");
+        if("new".equals(name)){if(!selectedThreadId.isEmpty())createProjectChat(selectedThreadId);}
+        else if("model".equals(name))modelDialog();
+        else if("usage".equals(name))usageDialog();
+        else if("status".equals(name)){String reason=MobileState.unavailableReason(currentState,currentThread,isSending());new AlertDialog.Builder(this).setTitle("聊天状态").setMessage((status==null?"":status.getText().toString())+"\n"+(reason.isEmpty()?"可发送消息":reason)+"\n"+(MobileState.activeTurnId(currentThread).isEmpty()?"当前无执行中任务":"任务执行中")).setPositiveButton("关闭",null).show();}
+        else if("compact".equals(name))new AlertDialog.Builder(this).setTitle("压缩当前聊天上下文？").setMessage("会调用电脑的上下文压缩功能，可能需要模型请求。聊天记录会保留。请等待当前任务完成后使用。").setNegativeButton("取消",null).setPositiveButton("压缩",(d,w)->{try{command(new JSONObject().put("op","compact"),false,()->toast("电脑已接受压缩请求"));}catch(Exception e){toast(error(e));}}).show();
+    }
     private String attachmentKey(){return api==null?"":api.fingerprint+":"+selectedThreadId;}
     private void renderAttachments(){
         if(attachmentTray==null)return;attachmentTray.removeAllViews();
@@ -422,7 +456,8 @@ public final class MainActivity extends Activity {
         questionArea=new InlineQuestionsView(this,()->root.getHeight()-root.getPaddingTop()-root.getPaddingBottom());questionContent=vertical();questionArea.addView(questionContent);questionArea.setVisibility(View.GONE);questionSignature="";questionChat="";root.addView(questionArea,new LinearLayout.LayoutParams(-1,-2));
         LinearLayout dock = vertical(); dock.setPadding(dp(10),dp(4),dp(10),dp(8)); dock.setBackground(rounded(surface(38,38,38),24));
         queueChip=text("",12,accent);queueChip.setPadding(dp(12),dp(8),dp(12),dp(4));queueChip.setTextIsSelectable(false);queueChip.setVisibility(View.GONE);queueChip.setOnClickListener(v->queueDialog());dock.addView(queueChip);
-        composer = field("发送消息"); composer.setBackgroundColor(Color.TRANSPARENT); composer.setSingleLine(false); composer.setMaxLines(6); composer.setMinLines(1); composer.setPadding(dp(12),dp(12),dp(8),dp(12)); composer.setText(drafts.containsKey(selectedThreadId) ? drafts.get(selectedThreadId) : "");
+        composer = field("发送消息，输入 / 选择命令"); composer.setBackgroundColor(Color.TRANSPARENT); composer.setSingleLine(false); composer.setMaxLines(6); composer.setMinLines(1); composer.setPadding(dp(12),dp(12),dp(8),dp(12)); composer.setText(drafts.containsKey(selectedThreadId) ? drafts.get(selectedThreadId) : "");
+        slashRows=vertical();slashScroll=new android.widget.ScrollView(this);slashScroll.addView(slashRows);dock.addView(slashScroll);slashScroll.setVisibility(View.GONE);
         dock.addView(composer,new LinearLayout.LayoutParams(-1,-2));
         attachmentTray=vertical();attachmentScroll=new android.widget.ScrollView(this);attachmentScroll.addView(attachmentTray);dock.addView(attachmentScroll);renderAttachments();
         LinearLayout controls=new LinearLayout(this);controls.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -440,7 +475,7 @@ public final class MainActivity extends Activity {
             else if(!"none".equals(action))submit(action);
             else if(composer.getText().toString().trim().isEmpty()&&!isSending())toast("长按按钮，语音输入");
         });
-        composer.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){if(!voiceUpdating&&speechInput!=null&&speechInput.running())cancelVoice();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));}public void afterTextChanged(android.text.Editable e){}});
+        composer.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int start,int before,int count){if(!voiceUpdating&&speechInput!=null&&speechInput.running())cancelVoice();setButtons(currentThread!=null&&currentThread.optBoolean("ready"));renderSlash();}public void afterTextChanged(android.text.Editable e){}});
         setButtons(false);
         RemoteApi client = api;
         worker.execute(() -> {
@@ -454,6 +489,7 @@ public final class MainActivity extends Activity {
         String blocked = MobileState.unavailableReason(currentState, currentThread, isSending());
         if (!blocked.isEmpty()) { toast(blocked); return; }
         String value = composer.getText().toString();
+        String builtin=SlashCommands.builtin(value);if(!builtin.isEmpty()){runSlash(builtin);return;}
         if (value.trim().isEmpty()&&!phoneAttachments.has(attachmentKey())) { toast("请输入消息或选择附件"); return; }
         try { command(new JSONObject().put("op", operation).put("text", value), true); } catch (Exception e) { toast(error(e)); }
     }
