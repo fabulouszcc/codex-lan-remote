@@ -185,3 +185,7 @@ test('refreshing queues preserves a newer owner broadcast and supports native te
 test('adding a mobile draft never copies server queue entries into the local queue setter',async t=>{
   const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',text:'server message'},{id:'local',prompt:'local message'}];bridge.historyReader.localQueuedMessages=async()=>[{id:'local',prompt:'local message'}];let written;client.setQueuedFollowUps=async(id,messages)=>{written=messages;};await bridge.connect();await bridge.command('active',{op:'queue',text:'mobile'});assert.deepEqual(written.map(r=>r.prompt),['local message','mobile']);assert.ok(!written.some(r=>r.id==='server'));
 });
+
+test('legacy owner broadcasts do not erase cached server queue entries',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',clientUserMessageId:'echo',serverQueue:true,prompt:'server message'}];await bridge.connect();client.emit('queuedMessages',{conversationId:'active',messages:[{id:'echo',prompt:'duplicate'},{id:'local',prompt:'new local'}]});assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(r=>r.id),['server','local']);
+});

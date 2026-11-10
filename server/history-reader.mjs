@@ -75,7 +75,7 @@ export class HistoryReader {
         await this.connect();let cursor;const seen=new Set();
         do{
           const page=await this.request('thread/queue/list',{threadId,limit:100,...cursor?{cursor}:{}});
-          server.push(...(page.data||[]).filter(row=>typeof row.id==='string').map(row=>({id:row.id,clientUserMessageId:row.clientUserMessageId,
+          server.push(...(page.data||[]).filter(row=>typeof row.id==='string').map(row=>({id:row.id,clientUserMessageId:row.clientUserMessageId,serverQueue:true,
             prompt:(row.input||[]).filter(item=>item.type==='text').map(item=>String(item.text||'')).join('\n')})));
           cursor=page.nextCursor;if(cursor&&seen.has(cursor))throw Error('排队消息分页游标重复');if(cursor)seen.add(cursor);
         }while(cursor&&server.length<100);

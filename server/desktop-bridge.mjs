@@ -31,7 +31,11 @@ export class DesktopBridge extends EventEmitter {
     for (const entry of this.entries.values()) { entry.ready = false; }
     const client = this.clientFactory({ controlThreadIds: [...this.entries.values()].filter(entry => entry.writable).map(entry => entry.id), timeoutMs: 30000 });
     this.client = client;
-    client.on('queuedMessages',({conversationId,messages})=>{if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;entry.nativeQueue=messages;entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');});
+    client.on('queuedMessages',({conversationId,messages})=>{
+      if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;
+      const server=(entry.nativeQueue||[]).filter(row=>row.serverQueue),clients=new Set(server.map(row=>row.clientUserMessageId));
+      entry.nativeQueue=[...server,...messages.filter(row=>!clients.has(row.id))];entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');
+    });
     client.on('threadState', ({ conversationId, change }) => {
       if (generation !== this.generation) return;
       const entry = this.entries.get(conversationId);
@@ -241,7 +245,7 @@ export class DesktopBridge extends EventEmitter {
       await this.client.setQueuedFollowUps(threadId,[...stored,message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
       if(!(entry.nativeQueue||[]).some(row=>row.id===command.messageId))throw Error('排队消息已变化，请刷新');
-      await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
+      await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);entry.nativeQueue=(entry.nativeQueue||[]).filter(row=>row.id!==command.messageId);this.emit('changed');
     } else if (command.op === 'start') {
       if (active) throw new Error('聊天正在执行，请等待完成或使用追加指令');
       await this.client.startTurn(threadId, command.text, { ownerId: entry.owner });
