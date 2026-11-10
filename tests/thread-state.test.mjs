@@ -99,3 +99,12 @@ test('canonical history order is independent of object insertion order and dupli
   } } };
   assert.deepEqual(getTurns(state).map(turn => turn.turnId), ['first', 'second']);
 });
+
+test('queued message reads merge paginated server entries with legacy drafts without duplicate client ids',async()=>{
+  const legacy=[{id:'client-1',prompt:'same'},{id:'local-2',prompt:'local only'}];const reader=new HistoryReader('unused',{sidebarReader:async()=>({'queued-follow-ups':{chat:legacy}})});reader.connect=async()=>{};
+  const calls=[];reader.request=async(method,params)=>{calls.push({method,params});return params.cursor?{data:[{id:'server-2',clientUserMessageId:'client-2',input:[{type:'text',text:'second'}]}],nextCursor:null}:{data:[{id:'server-1',clientUserMessageId:'client-1',input:[{type:'text',text:'first'},{type:'text',text:'continued'}]}],nextCursor:'page-2'};};
+  const rows=await reader.queuedMessages('chat');assert.deepEqual(rows.map(r=>r.id),['server-1','server-2','local-2']);assert.equal(rows[0].prompt,'first\ncontinued');assert.equal(calls[1].params.cursor,'page-2');assert.equal(calls[0].method,'thread/queue/list');assert.deepEqual(await reader.localQueuedMessages('chat'),legacy);
+});
+test('legacy queue fallback works on desktops without the server queue method',async()=>{
+  const reader=new HistoryReader('unused',{sidebarReader:async()=>({'queued-follow-ups':{chat:[{id:'legacy',prompt:'old desktop'}]}})});reader.connect=async()=>{};reader.request=async()=>{throw Object.assign(Error('unsupported'),{code:-32601});};assert.deepEqual((await reader.queuedMessages('chat')).map(r=>r.id),['legacy']);
+});

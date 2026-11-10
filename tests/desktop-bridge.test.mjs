@@ -176,3 +176,12 @@ test('permission and tool elicitation requests are visible as read-only attentio
   requests[0].completed=true;client.emit('threadState',{conversationId:'active',change:{type:'snapshot',revision:3,conversationState:{turns:[{turnId:'turn',status:'inProgress',items:[]}],requests}}});assert.deepEqual(bridge.snapshot()[0].attentionRequests.map(r=>r.id),[32,33]);
   client.emit('disconnected');assert.deepEqual(bridge.snapshot()[0].attentionRequests,[]);
 });
+
+test('refreshing queues preserves a newer owner broadcast and supports native text entries',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[];await bridge.connect();let release;
+  bridge.historyReader.queuedMessages=()=>new Promise(resolve=>{release=resolve;});const refresh=bridge.refreshQueue(bridge.entries.get('active'),bridge.generation);await Promise.resolve();
+  client.emit('queuedMessages',{conversationId:'active',messages:[{id:'newer',text:'native server message'}]});release([{id:'stale',prompt:'outdated'}]);await refresh;assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(r=>r.text),['native server message']);
+});
+test('adding a mobile draft never copies server queue entries into the local queue setter',async t=>{
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());bridge.historyReader.queuedMessages=async()=>[{id:'server',text:'server message'},{id:'local',prompt:'local message'}];bridge.historyReader.localQueuedMessages=async()=>[{id:'local',prompt:'local message'}];let written;client.setQueuedFollowUps=async(id,messages)=>{written=messages;};await bridge.connect();await bridge.command('active',{op:'queue',text:'mobile'});assert.deepEqual(written.map(r=>r.prompt),['local message','mobile']);assert.ok(!written.some(r=>r.id==='server'));
+});
