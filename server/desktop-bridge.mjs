@@ -162,7 +162,7 @@ export class DesktopBridge extends EventEmitter {
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
         queueSupported:!!this.historyReader?.queuedMessages,
-        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
+        queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.text||message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
         model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
         serviceTier:state?.latestThreadSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
@@ -221,10 +221,11 @@ export class DesktopBridge extends EventEmitter {
       if(!this.historyReader?.queuedMessages)throw Error('桌面排队状态暂不可读，请更新电脑插件');
       const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
       if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
-      const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
+      const id=randomUUID(),message={id,text:command.text,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
         context:{prompt:command.text,addedFiles:[],fileAttachments:[],imageAttachments:[],commentAttachments:[],ideContext:null,messageThreadId:randomUUID()},
         submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
-      await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
+      const existing = (entry.nativeQueue || []).map(row => typeof row.text !== 'string' && typeof row.prompt === 'string' ? {...row, text: row.prompt} : row);
+      await this.client.setQueuedFollowUps(threadId,[...existing,message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
       if(!(entry.nativeQueue||[]).some(row=>row.id===command.messageId))throw Error('排队消息已变化，请刷新');
       await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');

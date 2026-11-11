@@ -29,13 +29,13 @@ test('an old inProgress flag cannot keep a finished chat busy or expose stale ap
 });
 
 test('native FIFO preserves desktop queued messages and removal targets the live owner',async t=>{
-  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());let queue=[{id:'desktop',prompt:'first',submission:{status:'queued'}}],removed;
+  const {bridge,client}=fixture([{id:'active'}]);t.after(()=>bridge.close());const desktop={id:'desktop',text:'first',submission:{status:'queued'}}; const legacy={id:'legacy',prompt:'legacy',pausedReason:'interrupted',submission:{status:'queued'}}; let queue=[desktop,legacy],removed;
   bridge.historyReader.queuedMessages=async()=>structuredClone(queue);
   client.setQueuedFollowUps=async(id,messages,options)=>{assert.equal(id,'active');assert.equal(options.ownerId,'owner');queue=messages;client.emit('queuedMessages',{conversationId:id,messages});};
   client.removeQueuedMessage=async(...args)=>{removed=args;};await bridge.connect();
   await Promise.all([bridge.command('active',{op:'queue',text:'second'}),bridge.command('active',{op:'queue',text:'third'})]);
-  assert.deepEqual(queue.map(row=>row.prompt),['first','second','third']);assert.equal(queue[1].submissionIntent,'queue');
-  assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(row=>row.text),['first','second','third']);
+  assert.deepEqual(queue.map(row=>row.text.replaceAll(' ', ' ')),['first','legacy','second','third']); assert.deepEqual(queue[0],desktop); assert.deepEqual(queue[1],{...legacy,text:'legacy'}); assert.equal(queue[2].submissionIntent,'queue');
+  assert.deepEqual(bridge.snapshot()[0].queuedMessages.map(row=>row.text),['first','legacy','second','third']);
   await bridge.command('active',{op:'queue-remove',messageId:'desktop'});assert.deepEqual(removed,['active','desktop','owner']);await assert.rejects(bridge.command('active',{op:'queue-remove',messageId:'unknown'}),/变化/);
 });
 
