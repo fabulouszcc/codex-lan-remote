@@ -86,7 +86,6 @@ final class ChatRows {
             }
         }
         JSONArray confirmed=thread.optJSONArray("confirmedMessages");if(confirmed!=null)for(int i=0;i<confirmed.length();i++){JSONObject item=confirmed.getJSONObject(i);rows.removeIf(row->row.type.equals("welcome"));rows.add(new Row(chat+":sent:"+item.optString("id"),"user",item));}
-        JSONArray queued=thread.optJSONArray("queuedMessages");if(queued!=null)for(int i=0;i<queued.length();i++){JSONObject item=queued.getJSONObject(i);rows.removeIf(row->row.type.equals("welcome"));rows.add(new Row(chat+":queued:"+item.optString("id"),"user",new JSONObject().put("text",item.optString("text")).put("delivery",item.optString("status").equals("outcome-unknown")?"发送状态待确认":"已排队 · 等待执行")));}
         JSONObject activity=thread.optJSONObject("activity");
         if(thread.optBoolean("ready")&&!thread.optString("activeTurnId").isEmpty())rows.add(new Row(chat+":activity","activity",activity==null?new JSONObject().put("label","正在思考…"):activity));
         JSONArray approvals=thread.optJSONArray("approvals");
