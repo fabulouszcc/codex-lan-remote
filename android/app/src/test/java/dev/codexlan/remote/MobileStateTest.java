@@ -38,10 +38,12 @@ public class MobileStateTest {
         JSONObject replacement=echoThread("old","first");replacement.getJSONArray("turns").getJSONObject(0).getJSONArray("timeline").getJSONObject(1).put("id","server-replacement");
         assertEquals(1,sent.project(replacement).getJSONArray("confirmedMessages").length());assertEquals(0,sent.project(echoThread("old","first","second")).getJSONArray("confirmedMessages").length());
     }
-    @Test public void canonicalArrivingBeforeAckDoesNotShowADuplicateAndQueuesAreMarkedPending()throws Exception{
+    @Test public void canonicalArrivingBeforeAckDoesNotShowADuplicate()throws Exception{
         SentMessages sent=new SentMessages();sent.accepted("chat","one","same",SentMessages.users(echoThread("old")).keySet());assertEquals(0,sent.project(echoThread("old","new")).getJSONArray("confirmedMessages").length());
-        JSONObject thread=new JSONObject().put("id","queued-chat").put("queuedMessages",new JSONArray().put(new JSONObject().put("id","q").put("text","next").put("status","queued")));
-        java.util.List<ChatRows.Row> rows=ChatRows.build(thread);assertEquals(1,rows.size());assertEquals("user",rows.get(0).type);assertTrue(rows.get(0).data.getString("delivery").contains("已排队"));
+    }
+    @Test public void queueEntriesStayOutOfTranscriptWithoutHidingSentMessages()throws Exception{
+        JSONObject thread=echoThread("sent").put("queuedMessages",new JSONArray().put(new JSONObject().put("id","q").put("text","next").put("status","queued")));
+        java.util.List<ChatRows.Row> rows=ChatRows.build(thread);assertEquals(1,rows.size());assertEquals("user",rows.get(0).type);assertEquals("same",rows.get(0).data.getString("text"));assertEquals(1,thread.getJSONArray("queuedMessages").length());
     }
     @Test public void visibleSendModeControlsQueueOrSteerWithoutChangingIdleAndStop()throws Exception{
         JSONObject current=state("inProgress","",true).put("online",true),thread=current.getJSONArray("threads").getJSONObject(0);thread.put("queueSupported",true);
