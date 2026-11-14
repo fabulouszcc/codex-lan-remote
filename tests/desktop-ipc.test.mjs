@@ -77,7 +77,7 @@ test('discovers actual owner, reads settings, and accepts only matching owner/ta
     if (request.method === 'thread-follower-read-model-settings') respond(request, send, { settings: { model: 'test-model' } });
     if (request.method === 'thread-stream-following-changed' && request.params.following) {
       const message = { type: 'broadcast', method: 'thread-stream-state-changed', sourceClientId: 'desktop-owner',
-        targetClientIds: ['probe-client'], version: 11,
+        targetClientIds: ['probe-client'], version: 13,
         params: { hostId: 'local', conversationId: 'test-thread', change: { type: 'snapshot', revision: 1, conversationState: { id: 'test-thread' } } } };
       send({ ...message, sourceClientId: 'wrong-owner' });
       send({ ...message, targetClientIds: ['wrong-client'] });

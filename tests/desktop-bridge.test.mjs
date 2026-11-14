@@ -166,3 +166,26 @@ test('current turn comes from the live owner, never an unfinished history snapsh
   client.emit('disconnected');
   assert.equal(bridge.snapshot()[0].activeTurnId, '');
 });
+test('explicit authorized selection opens an unloaded chat and waits for live state', async t => {
+  const opened = [];
+  const {bridge,client} = fixture([], {allowSelectedChats:true, openDesktopChat:async id => opened.push(id)});
+  t.after(() => bridge.close());
+  client.discoverOwner = async () => {
+    if (!opened.length) throw Object.assign(Error('missing owner'), {reason:'no-client-found'});
+    return 'owner';
+  };
+  await bridge.connect();
+  await bridge.openThread('other');
+  assert.deepEqual(opened, []);
+  await bridge.openThread('other', {activate:true});
+  assert.equal(bridge.snapshot()[0].ready, false);
+  await new Promise((resolve,reject) => {
+    const timer = setTimeout(() => reject(Error('live snapshot missing')), 2500);
+    bridge.on('changed', () => {
+      if (bridge.snapshot()[0].ready) {clearTimeout(timer);resolve();}
+    });
+  });
+  assert.deepEqual(opened, ['other']);
+  assert.deepEqual(client.historyRequests, []);
+  assert.equal(bridge.snapshot()[0].writable, true);
+});

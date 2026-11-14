@@ -5,11 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, appendFile } from 'node:fs/promises';
 import { DesktopBridge } from '../server/desktop-bridge.mjs';
 import { HistoryReader } from '../server/history-reader.mjs';
-import { ChatCreator } from '../server/chat-creator.mjs';
+import { ChatCreator, launchDesktopThread } from '../server/chat-creator.mjs';
 import { createGateway } from '../server/gateway.mjs';
 import { atomicJson, readJson, addresses } from './config.mjs';
 import { desktopVersion } from './version.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
+
 async function createCertificate(input) {
   return new Promise((resolve, reject) => {
     const windowsPowerShell = join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0');
@@ -45,11 +46,12 @@ export class GatewayRuntime {
     const devicesPath = join(this.root, 'secrets', 'devices.local.json');
     const devices = await readJson(devicesPath, []);
     const historyReader = config.codexBinary ? new HistoryReader(config.codexBinary) : undefined;
-    const bridge = new DesktopBridge(config.threads, { historyReader,backgroundHistoryReader:config.codexBinary?new HistoryReader(config.codexBinary):undefined, allowSelectedChats: config.allowSelectedChats,chatCreator:config.codexBinary?new ChatCreator(config.codexBinary):undefined });
+    const bridge = new DesktopBridge(config.threads, { historyReader,backgroundHistoryReader:config.codexBinary?new HistoryReader(config.codexBinary):undefined, allowSelectedChats: config.allowSelectedChats,chatCreator:config.codexBinary?new ChatCreator(config.codexBinary):undefined, openDesktopChat: launchDesktopThread });
     const connectionAddresses={ primary:`https://${config.host}:${config.port}`, ...(config.lanHost ? {lan:`https://${config.lanHost}:${config.port}`} : {}) };
     const gateway = createGateway({ tls: this.tls, bridge, desktopVersion, deviceId: this.identity.deviceId, deviceName: config.name, connectionAddresses, devices, saveDevices: value => atomicJson(devicesPath, value) });
     const servers=[gateway.server];
     gateway.server.on('controlAction', event => { void appendFile(join(this.root, 'actions.local.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 }).catch(() => {}); });
+    bridge.on('selectionTiming', event => { void appendFile(join(this.root, 'actions.local.jsonl'), JSON.stringify(event) + '\n', { mode: 0o600 }).catch(() => {}); });
     try {
       await new Promise((resolve, reject) => { gateway.server.once('error', reject); gateway.server.listen(config.port, config.host, resolve); });
       if(config.lanHost && config.lanHost!==config.host){const lan=gateway.createListener();servers.push(lan);await new Promise((resolve,reject)=>{lan.once('error',reject);lan.listen(config.port,config.lanHost,resolve);});}

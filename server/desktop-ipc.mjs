@@ -12,7 +12,7 @@ export const PROTOCOL_VERSIONS = Object.freeze({
   'thread-follower-read-model-settings': 1,
   'thread-follower-update-thread-settings': 2,
   'thread-stream-following-changed': 1,
-  'thread-stream-state-changed': 11,
+  'thread-stream-state-changed': 13,
   'thread-follower-start-turn': 2,
   'thread-follower-load-complete-history': 1,
   'thread-follower-steer-turn': 1,
@@ -196,7 +196,7 @@ export class DesktopIpcClient extends EventEmitter {
     const { conversationId, hostId, change } = message.params || {};
     const owner = this.#subscriptions.get(conversationId);
     if (!owner || hostId !== 'local' || message.sourceClientId !== owner) return;
-    if (message.version !== PROTOCOL_VERSIONS[message.method]) {
+    if (![11, PROTOCOL_VERSIONS[message.method]].includes(message.version)) {
       this.emit('protocolMismatch', { method: message.method, version: message.version, conversationId });
       return;
     }
