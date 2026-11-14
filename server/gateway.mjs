@@ -140,7 +140,7 @@ export function createGateway({ tls, bridge, desktopVersion = '', deviceName = '
       if (request.method === 'POST' && url.pathname === '/v1/select') {
         const input = await body(request);
         if (typeof input.threadId !== 'string') throw fail(400, '需要聊天 ID');
-        try { await bridge.openThread(input.threadId); } catch (error) { throw fail(error.code==='THREAD_NOT_FOUND'?404:403, error.message); }
+        try { await bridge.openThread(input.threadId, {activate: true}); } catch (error) { throw fail(error.code==='THREAD_NOT_FOUND'?404:403, error.message); }
         selections.set(sessionHash,input.threadId);
         changed(); reply(response, 200, { selected: input.threadId }); return;
       }

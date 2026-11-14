@@ -5,13 +5,14 @@ import { pendingQuestions, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
-  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
+  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator,openDesktopChat } = {}) {
     super();
     this.entries = new Map(threads.map(thread => [thread.id, { ...thread, writable: true, history: [], store: new ThreadState(), ready: false, consumed: new Set() }]));
     this.historyReader = historyReader;
     this.backgroundHistoryReader=backgroundHistoryReader;
     this.allowSelectedChats = allowSelectedChats;
     this.chatCreator=chatCreator;
+    this.openDesktopChat = openDesktopChat;
     this.catalogRows = threads;
     this.clientFactory = clientFactory;
     this.generation = 0;
@@ -33,7 +34,7 @@ export class DesktopBridge extends EventEmitter {
       if (generation !== this.generation) return;
       const entry = this.entries.get(conversationId);
       if (!entry) return;
-      try { entry.store.apply(change); entry.ready = true; this.emit('changed'); }
+      try { entry.store.apply(change); entry.ready = true; this.recordSelectionReady(entry); this.emit('changed'); }
       catch { this.repairEntry(entry, generation); }
     });
     client.on('disconnected', () => {
@@ -80,13 +81,28 @@ export class DesktopBridge extends EventEmitter {
     return {...row,ready:false,writable:false,historyReady:true,historyUpdatedAt:row.updatedAt??0,
       turns:await this.backgroundHistoryReader.turns(threadId,{limit:10}),questions:[],approvals:[],activeTurnId:''};
   }
-  async openThread(id) {
+  recordSelectionReady(entry) {
+    const selection = this.desktopSelection;
+    if (selection?.id !== entry.id || selection.reported) return;
+    selection.reported = true;
+    this.emit('selectionTiming', {
+      at: new Date().toISOString(),
+      op: 'selection-ready',
+      elapsedMs: Date.now() - selection.startedAt,
+      ...(selection.launchAt ? {launchMs: selection.launchAt - selection.startedAt} : {}),
+      ...(selection.followAt ? {ownerMs: selection.followAt - selection.startedAt} : {}),
+    });
+  }
+
+  async openThread(id, {activate = false} = {}) {
+    const selection = activate ? (this.desktopSelection = {id, startedAt: Date.now()}) : null;
     if (this.entries.has(id)) {
-      const entry = this.entries.get(id); entry.historyReady = false;
+      const entry = this.entries.get(id);
+      if (entry.ready) { this.recordSelectionReady(entry); return; }
       this.entries.delete(id);this.entries.set(id,entry);
-      void this.hydrate(entry, this.generation); return;
+      void this.hydrate(entry, this.generation, selection); return;
     }
-    const row = (await this.catalog()).find(row => row.id === id);
+    const row = this.catalogRows.find(row => row.id === id) ?? (await this.catalog()).find(row => row.id === id);
     if (!row) {const error=Error('聊天已不存在于本机列表中');error.code='THREAD_NOT_FOUND';throw error;}
     if (this.entries.size >= 24) {
       const idle=[...this.entries.values()].find(entry=>!activeTurn(entry.store.state)&&!entry.loadingGeneration);
@@ -97,10 +113,14 @@ export class DesktopBridge extends EventEmitter {
     this.entries.set(id, entry);
     if (entry.writable) this.client?.enableThreadControl(id);
     this.emit('changed');
-    void this.hydrate(entry, this.generation);
+    void this.hydrate(entry, this.generation, selection);
   }
-  async hydrate(entry, generation) {
-    if (this.closed || entry.loadingGeneration === generation) return;
+  async hydrate(entry, generation, selection) {
+    if (this.closed) return;
+    if (entry.loadingGeneration === generation) {
+      if (selection) entry.pendingSelection = selection;
+      return;
+    }
     entry.loadingGeneration = generation;
     entry.repairPending = false;
     const persisted = async () => {
@@ -114,22 +134,63 @@ export class DesktopBridge extends EventEmitter {
     const live = async () => {
       try {
         const client = this.client;
-        const owner = await client.discoverOwner(entry.id);
+        const canActivate = () => selection && this.desktopSelection === selection &&
+          !this.closed && generation === this.generation && this.entries.get(entry.id) === entry &&
+          entry.writable && this.openDesktopChat;
+        let owner;
+        try {
+          owner = await client.discoverOwner(entry.id);
+        } catch (error) {
+          // A phone selection can arrive while background owner discovery is in flight.
+          if (entry.pendingSelection === this.desktopSelection) selection = entry.pendingSelection;
+          if (error.reason !== 'no-client-found' || !canActivate()) throw error;
+          if (entry.pendingSelection === selection) delete entry.pendingSelection;
+          selection.launchAt = Date.now();
+          await this.openDesktopChat(entry.id);
+          for (let attempt = 0; attempt < 16 && canActivate(); attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 250));
+            if (!canActivate()) return;
+            try {
+              owner = await client.discoverOwner(entry.id);
+              break;
+            } catch (retryError) {
+              if (retryError.reason !== 'no-client-found') throw retryError;
+            }
+          }
+          if (!owner) return;
+        }
         if (generation !== this.generation) return;
         entry.owner = owner;
         if(entry.resubscribe){client.unfollowThread?.(entry.id);entry.resubscribe=false;}
+        if (selection && this.desktopSelection === selection) selection.followAt = Date.now();
         await client.followThread(entry.id, owner);
         if(entry.nativeQueue===undefined&&this.historyReader?.queuedMessages){const epoch=entry.queueEpoch||0;const queue=await this.historyReader.queuedMessages(entry.id);if(generation===this.generation&&(entry.queueEpoch||0)===epoch)entry.nativeQueue=queue;}
         const [history]=await Promise.allSettled([
-          client.loadHistory(entry.id, owner),
+          (async () => {
+            if (selection) {
+              // Give the normal subscription a chance to deliver its snapshot first.
+              if (!entry.ready) await new Promise(resolve => setTimeout(resolve, 400));
+              if (this.closed || generation !== this.generation || this.entries.get(entry.id) !== entry) return false;
+              if (entry.ready) return false;
+            }
+            await client.loadHistory(entry.id, owner);
+            return true;
+          })(),
           client.readModelSettings ? client.readModelSettings(entry.id,owner).then(value=>{if(generation===this.generation)entry.modelSettings=value;}) : Promise.resolve(),
         ]);
-        if (generation === this.generation) { if(history.status==='fulfilled')entry.historyReady = true; this.emit('changed'); }
+        if (generation === this.generation) { if(history.status==='fulfilled' && history.value)entry.historyReady = true; this.emit('changed'); }
       } catch { /* Stored history remains viewable without a live desktop owner. */ }
     };
     try { await Promise.allSettled([persisted(), live()]); }
     finally {
       if(entry.loadingGeneration===generation)entry.loadingGeneration=null;
+      const pendingSelection = entry.pendingSelection;
+      if (pendingSelection && generation === this.generation) {
+        delete entry.pendingSelection;
+        if (!this.closed && this.desktopSelection === pendingSelection && !entry.ready) {
+          void this.hydrate(entry, generation, pendingSelection);
+        }
+      }
       if(entry.repairPending&&!this.closed&&generation===this.generation){entry.repairTimer=setTimeout(()=>void this.hydrate(entry,generation),250);entry.repairTimer.unref();}
     }
   }
