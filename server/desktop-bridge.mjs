@@ -5,7 +5,7 @@ import { pendingQuestions, validateAnswers } from './user-questions.mjs';
 import { randomUUID } from 'node:crypto';
 
 export class DesktopBridge extends EventEmitter {
-  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
+  constructor(threads, { clientFactory = options => new DesktopIpcClient(options), fallbackClientFactory, historyReader,backgroundHistoryReader=historyReader, allowSelectedChats = false,chatCreator } = {}) {
     super();
     this.entries = new Map(threads.map(thread => [thread.id, { ...thread, writable: true, history: [], store: new ThreadState(), ready: false, consumed: new Set() }]));
     this.historyReader = historyReader;
@@ -14,6 +14,7 @@ export class DesktopBridge extends EventEmitter {
     this.chatCreator=chatCreator;
     this.catalogRows = threads;
     this.clientFactory = clientFactory;
+    this.fallbackClientFactory = fallbackClientFactory;
     this.generation = 0;
     this.closed = false;
     this.refreshTimer = setInterval(() => {
@@ -26,8 +27,52 @@ export class DesktopBridge extends EventEmitter {
     const generation = ++this.generation;
     this.client?.close();
     for (const entry of this.entries.values()) { entry.ready = false; }
-    const client = this.clientFactory({ controlThreadIds: [...this.entries.values()].filter(entry => entry.writable).map(entry => entry.id), timeoutMs: 30000 });
+    const options = {
+      controlThreadIds: [...this.entries.values()].filter(entry => entry.writable).map(entry => entry.id),
+      timeoutMs: 30000,
+    };
+    let client = this.clientFactory(options);
+    try {
+      try {
+        await client.connect();
+      } catch (error) {
+        if (error.code !== 'ENOENT' || !this.fallbackClientFactory) throw error;
+        client.close();
+        client = this.fallbackClientFactory(options);
+        await client.connect();
+      }
+    } catch {
+      client.close();
+      this.scheduleReconnect();
+      return;
+    }
+    if (this.closed || generation !== this.generation) {
+      client.close();
+      return;
+    }
     this.client = client;
+    for (const entry of this.entries.values()) {
+      if (entry.writable && !options.controlThreadIds.includes(entry.id)) client.enableThreadControl?.(entry.id);
+    }
+    client.on('savedState', ({ conversationId, turns, cwd, ready, revision }) => {
+      const entry = this.entries.get(conversationId);
+      if (!entry || generation !== this.generation) return;
+      entry.history = turns;
+      entry.historyReady = true;
+      entry.historyError = false;
+      entry.ready = ready;
+      entry.store.apply({
+        type: 'snapshot', revision,
+        conversationState: { id: conversationId, cwd, threadRuntimeStatus: { type: ready ? 'idle' : 'active' } },
+      });
+      this.emit('changed');
+    });
+    client.on('savedStateUnavailable', conversationId => {
+      const entry = this.entries.get(conversationId);
+      if (!entry || generation !== this.generation) return;
+      entry.ready = false;
+      this.emit('changed');
+    });
     client.on('queuedMessages',({conversationId,messages})=>{if(generation!==this.generation)return;const entry=this.entries.get(conversationId);if(!entry)return;entry.nativeQueue=messages;entry.queueEpoch=(entry.queueEpoch||0)+1;this.emit('changed');});
     client.on('threadState', ({ conversationId, change }) => {
       if (generation !== this.generation) return;
@@ -46,10 +91,7 @@ export class DesktopBridge extends EventEmitter {
       const entry=this.entries.get(conversationId);
       if(entry)this.repairEntry(entry,generation);
     });
-    try {
-      await client.connect();
-      await Promise.allSettled([...this.entries.values()].map(entry => this.hydrate(entry, generation)));
-    } catch { this.scheduleReconnect(); }
+    await Promise.allSettled([...this.entries.values()].map(entry => this.hydrate(entry, generation)));
   }
   async catalog() {
     if (this.historyReader && (!this.catalogAt || Date.now() - this.catalogAt > 15000)) {
@@ -104,7 +146,7 @@ export class DesktopBridge extends EventEmitter {
     entry.loadingGeneration = generation;
     entry.repairPending = false;
     const persisted = async () => {
-      if (!this.historyReader || entry.historyReady) return;
+      if (!this.historyReader || entry.historyReady || this.client?.isAppServer) return;
       try {
         const history = await this.historyReader.turns(entry.id);
         if (generation !== this.generation) return;
@@ -119,6 +161,7 @@ export class DesktopBridge extends EventEmitter {
         entry.owner = owner;
         if(entry.resubscribe){client.unfollowThread?.(entry.id);entry.resubscribe=false;}
         await client.followThread(entry.id, owner);
+        if (client.isAppServer) return;
         if(entry.nativeQueue===undefined&&this.historyReader?.queuedMessages){const epoch=entry.queueEpoch||0;const queue=await this.historyReader.queuedMessages(entry.id);if(generation===this.generation&&(entry.queueEpoch||0)===epoch)entry.nativeQueue=queue;}
         const [history]=await Promise.allSettled([
           client.loadHistory(entry.id, owner),
@@ -161,10 +204,10 @@ export class DesktopBridge extends EventEmitter {
           toolResults: turn.toolResults?.length ? turn.toolResults : previous?.toolResults || [] });
       }
       return { id: entry.id, name: entry.name || '桌面聊天', ready: entry.ready,
-        queueSupported:!!this.historyReader?.queuedMessages,
+        queueSupported:!this.client?.isAppServer&&!!this.historyReader?.queuedMessages,
         queuedMessages:(entry.nativeQueue||[]).slice(0,100).map(message=>({id:message.id,text:String(message.prompt||message.context?.prompt||'').slice(0,16000),status:message.submission?.status||'queued'})),
         model: state?.latestThreadSettings?.model || state?.latestModel || entry.modelSettings?.model || '', reasoningEffort:state?.latestReasoningEffort || state?.latestThreadSettings?.effort || entry.modelSettings?.reasoningEffort || '',
-        serviceTier:state?.latestThreadSettings?.serviceTier??'default',
+        serviceTier:state?.latestThreadSettings?.serviceTier??entry.modelSettings?.serviceTier??'default',
         activity: entry.ready ? summary.activity : undefined,
         writable: !!entry.writable, historyReady: !!entry.historyReady,
         // Only the live owner can identify the current turn; cached history may
@@ -199,7 +242,13 @@ export class DesktopBridge extends EventEmitter {
       try{return await operation;}finally{if(entry.queueOperation===operation)delete entry.queueOperation;}
     }
     const entry = this.entries.get(threadId);
-    if (!entry || !entry.ready || !this.client.initialized) throw new Error('聊天尚未就绪，请等待重新连接');
+    if (!entry || !this.client?.initialized) throw new Error('聊天尚未就绪，请等待重新连接');
+    if (!entry.ready) {
+      if (this.client.isAppServer && entry.store.state?.threadRuntimeStatus?.type === 'active') {
+        throw Error('电脑上的这一轮还在执行，请等它完成后再从手机续发');
+      }
+      throw Error('聊天尚未就绪，请等待重新连接');
+    }
     if (!entry.writable) throw new Error('此聊天仅允许读取，请在电脑授权后操作');
     const state = entry.store.state;
     const active = activeTurn(state);
@@ -213,12 +262,12 @@ export class DesktopBridge extends EventEmitter {
       entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
       if(entry.modelSettings?.model!==command.model || entry.modelSettings?.reasoningEffort!==command.effort)throw Error('模型设置回执尚未确认，请刷新后核对');
       if(command.serviceTier!==undefined){
-        for(let i=0;i<20&&(entry.store.state?.latestThreadSettings?.serviceTier??'default')!==command.serviceTier;i++)await new Promise(resolve=>setTimeout(resolve,50));
-        if((entry.store.state?.latestThreadSettings?.serviceTier??'default')!==command.serviceTier)throw Error('电脑速度设置尚未确认，请刷新后核对');
+        for(let i=0;i<20&&(entry.store.state?.latestThreadSettings?.serviceTier??entry.modelSettings?.serviceTier??'default')!==command.serviceTier;i++)await new Promise(resolve=>setTimeout(resolve,50));
+        if((entry.store.state?.latestThreadSettings?.serviceTier??entry.modelSettings?.serviceTier??'default')!==command.serviceTier)throw Error('电脑速度设置尚未确认，请刷新后核对');
       }
       this.emit('changed');
     } else if(command.op==='queue'){
-      if(!this.historyReader?.queuedMessages)throw Error('桌面排队状态暂不可读，请更新电脑插件');
+      if(this.client.isAppServer||!this.historyReader?.queuedMessages)throw Error('桌面排队状态暂不可读，请更新电脑插件');
       const epoch=entry.queueEpoch||0,stored=await this.historyReader.queuedMessages(threadId);if((entry.queueEpoch||0)===epoch)entry.nativeQueue=stored;
       if((entry.nativeQueue||[]).length>=100)throw Error('此会话已有 100 条排队消息');
       const id=randomUUID(),message={id,prompt:command.text,createdAt:Date.now(),cwd:state.cwd,submissionIntent:'queue',
@@ -226,6 +275,7 @@ export class DesktopBridge extends EventEmitter {
         submission:{hostId:'local',status:'queued',queueModeOverride:'queue'}};
       await this.client.setQueuedFollowUps(threadId,[...(entry.nativeQueue||[]),message],{ownerId:entry.owner});this.emit('changed');return {accepted:true,queued:true,messageId:id};
     } else if(command.op==='queue-remove'){
+      if(this.client.isAppServer)throw Error('此连接不支持桌面排队');
       if(!(entry.nativeQueue||[]).some(row=>row.id===command.messageId))throw Error('排队消息已变化，请刷新');
       await this.client.removeQueuedMessage(threadId,command.messageId,entry.owner);this.emit('changed');
     } else if (command.op === 'start') {
@@ -277,7 +327,7 @@ export class DesktopBridge extends EventEmitter {
       this.modelCatalog=await this.historyReader.models();this.modelCatalogAt=Date.now();
     }
     entry.modelSettings=await this.client.readModelSettings(threadId,entry.owner);
-    return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??'default'}};
+    return {models:this.modelCatalog,current:{model:entry.modelSettings?.model||'',effort:entry.modelSettings?.reasoningEffort||'',serviceTier:entry.store.state?.latestThreadSettings?.serviceTier??entry.modelSettings?.serviceTier??'default'}};
   }
   close() { this.closed = true; ++this.generation; clearTimeout(this.reconnectTimer); clearInterval(this.refreshTimer);for(const entry of this.entries.values())clearTimeout(entry.repairTimer);this.client?.close(); this.historyReader?.close();if(this.backgroundHistoryReader!==this.historyReader)this.backgroundHistoryReader?.close(); }
 }
